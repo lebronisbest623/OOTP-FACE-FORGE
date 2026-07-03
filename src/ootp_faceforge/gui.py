@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import os
 import queue
 import subprocess
@@ -43,6 +44,7 @@ class FaceForgeApp(tk.Tk):
         )
         self.status_var = tk.StringVar(value="Ready")
         self.photo_count_var = tk.StringVar(value="")
+        self.batch_file_var = tk.StringVar(value="")
 
         self._configure_style()
         self._build_ui()
@@ -142,10 +144,27 @@ class FaceForgeApp(tk.Tk):
         )
         self.build_button.grid(row=6, column=0, sticky="ew")
 
+        self.batch_button = tk.Button(
+            controls,
+            text="Build Batch...",
+            command=self._choose_batch,
+            bg="#ffffff",
+            fg="#1d1d1f",
+            activebackground="#f5f5f7",
+            activeforeground="#1d1d1f",
+            bd=1,
+            relief="solid",
+            highlightthickness=0,
+            font=("Segoe UI", 11, "bold"),
+            padx=18,
+            pady=12,
+        )
+        self.batch_button.grid(row=7, column=0, sticky="ew", pady=(10, 0))
+
         self.progress = ttk.Progressbar(controls, mode="indeterminate")
-        self.progress.grid(row=7, column=0, sticky="ew", pady=(18, 10))
+        self.progress.grid(row=8, column=0, sticky="ew", pady=(18, 10))
         ttk.Label(controls, textvariable=self.status_var, style="Status.TLabel").grid(
-            row=8, column=0, sticky="w"
+            row=9, column=0, sticky="w"
         )
 
         self.output_button = ttk.Button(
@@ -154,7 +173,7 @@ class FaceForgeApp(tk.Tk):
             command=self._open_output,
             state="disabled",
         )
-        self.output_button.grid(row=9, column=0, sticky="ew", pady=(18, 0))
+        self.output_button.grid(row=10, column=0, sticky="ew", pady=(18, 0))
 
         preview_panel = ttk.Frame(body, style="Panel.TFrame", padding=24)
         preview_panel.grid(row=0, column=1, sticky="nsew")
@@ -192,6 +211,18 @@ class FaceForgeApp(tk.Tk):
         if text:
             self.logs.append(text)
 
+    def _set_busy(self, busy: bool, label: str = "Building...") -> None:
+        if busy:
+            self.status_var.set(label)
+            self.output_button.configure(state="disabled")
+            self.build_button.configure(state="disabled")
+            self.batch_button.configure(state="disabled")
+            self.progress.start(12)
+            return
+        self.progress.stop()
+        self.build_button.configure(state="normal", text="Build FaceGen")
+        self.batch_button.configure(state="normal", text="Build Batch...")
+
     def _build(self) -> None:
         photos = Path(self.photos_var.get())
         if not photos.exists():
@@ -202,12 +233,25 @@ class FaceForgeApp(tk.Tk):
             return
 
         self.logs.clear()
-        self.status_var.set("Building...")
-        self.output_button.configure(state="disabled")
-        self.build_button.configure(state="disabled", text="Building...")
-        self.progress.start(12)
+        self.build_button.configure(text="Building...")
+        self._set_busy(True)
 
         thread = threading.Thread(target=self._build_worker, daemon=True)
+        thread.start()
+
+    def _choose_batch(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Choose batch JSON",
+            initialdir=str(PROJECT_ROOT / "examples"),
+            filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+        )
+        if not path:
+            return
+        self.batch_file_var.set(path)
+        self.logs.clear()
+        self.batch_button.configure(text="Building batch...")
+        self._set_busy(True, "Building batch...")
+        thread = threading.Thread(target=self._batch_worker, args=(Path(path),), daemon=True)
         thread.start()
 
     def _build_worker(self) -> None:
@@ -236,6 +280,7 @@ class FaceForgeApp(tk.Tk):
             flat_copy=False,
             overwrite_meta=True,
         )
+        self._apply_default_detail_args(args)
         stdout = io.StringIO()
         stderr = io.StringIO()
         try:
@@ -244,6 +289,70 @@ class FaceForgeApp(tk.Tk):
             self.events.put(("done", (manifest, stdout.getvalue(), stderr.getvalue())))
         except Exception as exc:
             self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
+
+    def _batch_worker(self, batch_path: Path) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        manifests = []
+        try:
+            data = json.loads(batch_path.read_text(encoding="utf-8"))
+            if not isinstance(data, list):
+                raise ValueError("batch file must be a JSON list")
+            total = len(data)
+            if total == 0:
+                raise ValueError("batch file is empty")
+            for idx, item in enumerate(data, 1):
+                if not isinstance(item, dict):
+                    raise ValueError(f"batch item {idx} must be an object")
+                if not item.get("photos"):
+                    raise ValueError(f"batch item {idx} missing photos")
+                name = item.get("name") or Path(str(item["photos"])).name
+                self.events.put(("status", f"Building {idx}/{total}: {name}"))
+                args = Namespace(
+                    photos=item["photos"],
+                    name=item.get("name"),
+                    slug=item.get("slug"),
+                    out_dir=item.get("out_dir", str(DEFAULT_OUT)),
+                    profile=item.get("profile", DEFAULT_PROFILE),
+                    texture_photo=item.get("texture_photo"),
+                    max_yaw=item.get("max_yaw"),
+                    shape_lam=item.get("shape_lam"),
+                    asym_lam=item.get("asym_lam"),
+                    dense_weight=item.get("dense_weight"),
+                    tex_lam=item.get("tex_lam"),
+                    tex_erode=item.get("tex_erode"),
+                    exposure_lo=item.get("exposure_lo"),
+                    exposure_hi=item.get("exposure_hi"),
+                    detail_size=item.get("detail_size"),
+                    detail_strength=item.get("detail_strength"),
+                    detail_chroma_strength=item.get("detail_chroma_strength"),
+                    detail_edge_strength=item.get("detail_edge_strength"),
+                    detail_flat_neutralize=item.get("detail_flat_neutralize"),
+                    detail_jpeg_quality=item.get("detail_jpeg_quality"),
+                    eye_detail_strength=item.get("eye_detail_strength"),
+                    detail_min_cos=item.get("detail_min_cos"),
+                    debug_dir=item.get("debug_dir"),
+                    size=item.get("size", 512),
+                    aa=item.get("aa", 2),
+                    flat_copy=item.get("flat_copy", False),
+                    overwrite_meta=item.get("overwrite_meta", True),
+                )
+                self._apply_default_detail_args(args)
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    manifests.append(build_player(args))
+            self.events.put(("batch_done", (manifests, stdout.getvalue(), stderr.getvalue())))
+        except Exception as exc:
+            self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
+
+    def _apply_default_detail_args(self, args: Namespace) -> None:
+        for name in (
+            "detail_chroma_strength",
+            "detail_edge_strength",
+            "detail_flat_neutralize",
+            "detail_jpeg_quality",
+        ):
+            if not hasattr(args, name):
+                setattr(args, name, None)
 
     def _poll_events(self) -> None:
         try:
@@ -256,17 +365,28 @@ class FaceForgeApp(tk.Tk):
                     self._show_preview(Path(manifest["outputs"]["preview"]))
                     self.last_output = Path(manifest["outputs"]["preview"]).parents[1]
                     self.status_var.set("Complete")
-                    self.progress.stop()
-                    self.build_button.configure(state="normal", text="Build FaceGen")
+                    self._set_busy(False)
                     self.output_button.configure(state="normal")
+                elif kind == "batch_done":
+                    manifests, stdout, stderr = payload  # type: ignore[misc]
+                    self._append_log(stdout)
+                    self._append_log(stderr)
+                    if manifests:
+                        last_preview = Path(manifests[-1]["outputs"]["preview"])
+                        self._show_preview(last_preview)
+                        self.last_output = Path(manifests[-1]["outputs"]["fg"]).parents[2]
+                    self.status_var.set(f"Batch complete: {len(manifests)} built")
+                    self._set_busy(False)
+                    self.output_button.configure(state="normal")
+                elif kind == "status":
+                    self.status_var.set(str(payload))
                 elif kind == "error":
                     exc, stdout, stderr = payload  # type: ignore[misc]
                     self._append_log(stdout)
                     self._append_log(stderr)
                     self._append_log(str(exc))
                     self.status_var.set("Failed")
-                    self.progress.stop()
-                    self.build_button.configure(state="normal", text="Build FaceGen")
+                    self._set_busy(False)
                     messagebox.showerror("Build failed", str(exc))
         except queue.Empty:
             pass
