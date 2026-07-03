@@ -101,7 +101,7 @@ class FaceForgeApp(tk.Tk):
         ttk.Label(controls, text="Photos", style="H2.TLabel").grid(row=2, column=0, sticky="w")
         self.photo_button = tk.Button(
             controls,
-            text="Choose Photos",
+            text="Choose Folder",
             command=self._choose_photos,
             bg="#ffffff",
             fg="#0071e3",
@@ -144,8 +144,8 @@ class FaceForgeApp(tk.Tk):
 
         self.batch_button = tk.Button(
             controls,
-            text="Build Batch",
-            command=self._show_batch_menu,
+            text="Build Photos",
+            command=self._choose_batch_photos,
             bg="#ffffff",
             fg="#1d1d1f",
             activebackground="#f5f5f7",
@@ -159,10 +159,27 @@ class FaceForgeApp(tk.Tk):
         )
         self.batch_button.grid(row=7, column=0, sticky="ew", pady=(10, 0))
 
+        self.folder_batch_button = tk.Button(
+            controls,
+            text="Build Folders",
+            command=self._choose_batch_folder,
+            bg="#ffffff",
+            fg="#1d1d1f",
+            activebackground="#f5f5f7",
+            activeforeground="#1d1d1f",
+            bd=1,
+            relief="solid",
+            highlightthickness=0,
+            font=("Segoe UI", 11, "bold"),
+            padx=18,
+            pady=12,
+        )
+        self.folder_batch_button.grid(row=8, column=0, sticky="ew", pady=(8, 0))
+
         self.progress = ttk.Progressbar(controls, mode="indeterminate")
-        self.progress.grid(row=8, column=0, sticky="ew", pady=(18, 10))
+        self.progress.grid(row=9, column=0, sticky="ew", pady=(18, 10))
         ttk.Label(controls, textvariable=self.status_var, style="Status.TLabel").grid(
-            row=9, column=0, sticky="w"
+            row=10, column=0, sticky="w"
         )
 
         self.output_button = ttk.Button(
@@ -171,7 +188,7 @@ class FaceForgeApp(tk.Tk):
             command=self._open_output,
             state="disabled",
         )
-        self.output_button.grid(row=10, column=0, sticky="ew", pady=(18, 0))
+        self.output_button.grid(row=11, column=0, sticky="ew", pady=(18, 0))
 
         preview_panel = ttk.Frame(body, style="Panel.TFrame", padding=24)
         preview_panel.grid(row=0, column=1, sticky="nsew")
@@ -215,11 +232,13 @@ class FaceForgeApp(tk.Tk):
             self.output_button.configure(state="disabled")
             self.build_button.configure(state="disabled")
             self.batch_button.configure(state="disabled")
+            self.folder_batch_button.configure(state="disabled")
             self.progress.start(12)
             return
         self.progress.stop()
         self.build_button.configure(state="normal", text="Build FaceGen")
-        self.batch_button.configure(state="normal", text="Build Batch")
+        self.batch_button.configure(state="normal", text="Build Photos")
+        self.folder_batch_button.configure(state="normal", text="Build Folders")
 
     def _build(self) -> None:
         photos = Path(self.photos_var.get())
@@ -236,15 +255,6 @@ class FaceForgeApp(tk.Tk):
 
         thread = threading.Thread(target=self._build_worker, daemon=True)
         thread.start()
-
-    def _show_batch_menu(self) -> None:
-        menu = tk.Menu(self, tearoff=False, bg="#ffffff", fg="#1d1d1f")
-        menu.add_command(label="Photos...", command=self._choose_batch_photos)
-        menu.add_command(label="Folders...", command=self._choose_batch_folder)
-        menu.tk_popup(
-            self.batch_button.winfo_rootx(),
-            self.batch_button.winfo_rooty() + self.batch_button.winfo_height(),
-        )
 
     def _choose_batch_photos(self) -> None:
         paths = filedialog.askopenfilenames(
