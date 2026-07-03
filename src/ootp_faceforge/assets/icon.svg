@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+  <title id="title">Baseball icon</title>
+  <desc id="desc">A clean white baseball with red seams.</desc>
+  <defs>
+    <radialGradient id="ball" cx="38%" cy="30%" r="72%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="58%" stop-color="#f9f7f1"/>
+      <stop offset="100%" stop-color="#e7e1d6"/>
+    </radialGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="7" stdDeviation="5" flood-color="#162033" flood-opacity=".2"/>
+    </filter>
+  </defs>
+  <circle cx="64" cy="60" r="48" fill="url(#ball)" stroke="#1f2a3a" stroke-width="4" filter="url(#shadow)"/>
+  <path d="M33 22c21 20 21 56 0 76" fill="none" stroke="#c92335" stroke-width="5" stroke-linecap="round"/>
+  <path d="M95 22c-21 20-21 56 0 76" fill="none" stroke="#c92335" stroke-width="5" stroke-linecap="round"/>
+  <g fill="none" stroke="#c92335" stroke-width="3" stroke-linecap="round">
+    <path d="M40 32l-8 4"/>
+    <path d="M45 43l-9 3"/>
+    <path d="M47 55l-10 1"/>
+    <path d="M47 67l-10-1"/>
+    <path d="M45 79l-9-3"/>
+    <path d="M40 90l-8-4"/>
+    <path d="M88 32l8 4"/>
+    <path d="M83 43l9 3"/>
+    <path d="M81 55l10 1"/>
+    <path d="M81 67l10-1"/>
+    <path d="M83 79l9-3"/>
+    <path d="M88 90l8-4"/>
+  </g>
+  <path d="M47 28c13-8 31-8 44 2" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity=".75"/>
+</svg>

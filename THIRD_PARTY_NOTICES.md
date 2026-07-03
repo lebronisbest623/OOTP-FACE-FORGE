@@ -1,0 +1,43 @@
+# Third-Party Notices
+
+This project is an unofficial compatibility tool. It is not affiliated with,
+endorsed by, or sponsored by Out of the Park Developments, Singular Inversions,
+Google, MLB, or MLB Players, Inc.
+
+## Runtime Dependencies
+
+OOTP FaceForge depends on these Python packages:
+
+- MediaPipe, licensed under Apache License 2.0.
+- NumPy, licensed under a BSD-style license.
+- OpenCV Python packages, licensed under Apache License 2.0.
+- Pillow, licensed under the HPND license.
+
+See each package distribution for its full license text and bundled dependency
+notices.
+
+## Bundled MediaPipe Model
+
+The repository includes `src/ootp_faceforge/face_landmarker.task`, the
+MediaPipe Face Landmarker model bundle. The related MediaPipe model cards
+identify the included face detector, face mesh, and blendshape models as
+licensed under Apache License 2.0. A copy of Apache License 2.0 is included at
+`LICENSES/Apache-2.0.txt`.
+
+Reference documentation:
+
+- https://developers.google.com/edge/mediapipe/solutions/vision/face_landmarker
+- https://storage.googleapis.com/mediapipe-assets/MediaPipe%20BlazeFace%20Model%20Card%20%28Short%20Range%29.pdf
+- https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf
+- https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Blendshape%20V2.pdf
+
+## OOTP and FaceGen Assets
+
+This repository does not include OOTP game assets, FaceGen Modeller assets, or
+FaceGen SDK assets. Users must provide their own licensed local installations.
+The code reads those local assets at runtime to build compatible `.fg` files
+and preview renders.
+
+Do not commit player photos, generated `.fg` files, OOTP asset files, FaceGen
+model files such as `.tri`, `.egm`, `.egt`, `.fim`, or generated preview images
+unless you have the rights to redistribute them.

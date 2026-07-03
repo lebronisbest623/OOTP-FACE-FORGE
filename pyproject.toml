@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ootp-faceforge"
+version = "0.1.0"
+description = "Build OOTP-compatible FaceGen files from player photo folders."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+dependencies = [
+  "mediapipe",
+  "numpy",
+  "opencv-python",
+  "Pillow",
+]
+
+[project.scripts]
+ootp-faceforge = "ootp_faceforge.cli:main"
+ootp-faceforge-gui = "ootp_faceforge.gui:main"
+
+[tool.setuptools]
+license-files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
+
+[tool.setuptools.package-data]
+ootp_faceforge = ["face_landmarker.task", "assets/icon.svg", "assets/icon.ico"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

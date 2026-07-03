@@ -1,0 +1,416 @@
+"""Product-style CLI for OOTP FaceForge."""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import datetime as dt
+import importlib
+import io
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+
+ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = ROOT.parent.parent
+DEFAULT_OUT = PROJECT_ROOT / "dist"
+
+PROFILES: dict[str, list[str]] = {
+    "identity": [],
+    "clean": [
+        "--tex-lam", "7",
+        "--detail-strength", "0.55",
+        "--eye-detail-strength", "0.15",
+    ],
+    "mouth-soft": [
+        "--tex-lam", "10",
+        "--detail-strength", "0.4",
+        "--eye-detail-strength", "0.12",
+    ],
+    "strict-front": [
+        "--max-yaw", "0.04",
+    ],
+}
+
+INTERNAL_MODULES = {
+    "ootp_faceforge.pipeline",
+    "ootp_faceforge.render",
+}
+
+
+def slugify(value: str) -> str:
+    value = value.strip().replace("\\", "/").split("/")[-1]
+    value = re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_")
+    return value.lower() or "player"
+
+
+def now_iso() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
+
+
+def run_command(args: list[str], cwd: Path) -> dict[str, Any]:
+    if len(args) >= 3 and args[0] == sys.executable and args[1] == "-m":
+        module_name = args[2]
+        if module_name in INTERNAL_MODULES:
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            old_cwd = Path.cwd()
+            try:
+                os.chdir(cwd)
+                module = importlib.import_module(module_name)
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    module.main(args[3:])
+                return {
+                    "args": args,
+                    "returncode": 0,
+                    "stdout": stdout.getvalue(),
+                    "stderr": stderr.getvalue(),
+                }
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 1
+                if exc.code not in (None, 0) and not isinstance(exc.code, int):
+                    print(exc.code, file=stderr)
+                return {
+                    "args": args,
+                    "returncode": code,
+                    "stdout": stdout.getvalue(),
+                    "stderr": stderr.getvalue(),
+                }
+            except Exception as exc:
+                print(f"{type(exc).__name__}: {exc}", file=stderr)
+                return {
+                    "args": args,
+                    "returncode": 1,
+                    "stdout": stdout.getvalue(),
+                    "stderr": stderr.getvalue(),
+                }
+            finally:
+                os.chdir(old_cwd)
+
+    env = os.environ.copy()
+    src_path = str(PROJECT_ROOT / "src")
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = src_path if not existing else src_path + os.pathsep + existing
+    proc = subprocess.run(
+        args,
+        cwd=str(cwd),
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return {
+        "args": args,
+        "returncode": proc.returncode,
+        "stdout": proc.stdout,
+        "stderr": proc.stderr,
+    }
+
+
+def require_ok(result: dict[str, Any], label: str) -> None:
+    if result["returncode"] == 0:
+        return
+    sys.stderr.write(result["stdout"])
+    sys.stderr.write(result["stderr"])
+    raise SystemExit(f"{label} failed with exit code {result['returncode']}")
+
+
+def add_optional_arg(cmd: list[str], name: str, value: Any) -> None:
+    if value is None:
+        return
+    cmd.extend([f"--{name.replace('_', '-')}", str(value)])
+
+
+def parse_pipeline_summary(stdout: str) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "photos": [],
+    }
+    for line in stdout.splitlines():
+        if line.startswith("photo "):
+            summary["photos"].append(line)
+        elif line.startswith("skip "):
+            summary.setdefault("skipped", []).append(line)
+        elif line.startswith("texture photo:"):
+            summary["texture_photo"] = line.partition(":")[2].strip()
+        elif line.startswith("multi shape:"):
+            summary["shape"] = line
+        elif line.startswith("exposure gain:"):
+            summary["exposure_gain"] = line.partition(":")[2].strip()
+        elif line.startswith("tex fit:"):
+            summary["texture_fit"] = line
+        elif line.startswith("detail coverage:"):
+            summary["detail_coverage"] = line.partition(":")[2].strip()
+    return summary
+
+
+def build_pipeline_args(args: argparse.Namespace, fg_path: Path) -> list[str]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "ootp_faceforge.pipeline",
+        str(Path(args.photos)),
+        str(fg_path),
+    ]
+    cmd.extend(PROFILES[args.profile])
+    for option in (
+        "texture_photo",
+        "max_yaw",
+        "shape_lam",
+        "asym_lam",
+        "dense_weight",
+        "tex_lam",
+        "tex_erode",
+        "exposure_lo",
+        "exposure_hi",
+        "detail_size",
+        "detail_strength",
+        "detail_chroma_strength",
+        "detail_edge_strength",
+        "detail_flat_neutralize",
+        "detail_jpeg_quality",
+        "eye_detail_strength",
+        "detail_min_cos",
+        "debug_dir",
+    ):
+        add_optional_arg(cmd, option, getattr(args, option, None))
+    return cmd
+
+
+def build_player(args: argparse.Namespace) -> dict[str, Any]:
+    photos = Path(args.photos)
+    name = getattr(args, "name", None) or photos.name
+    slug = slugify(getattr(args, "slug", None) or name)
+    player_dir = Path(args.out_dir) / slug
+    fg_dir = player_dir / "facegen"
+    preview_dir = player_dir / "preview"
+    meta_dir = player_dir / "meta"
+    log_dir = player_dir / "logs"
+    for directory in (fg_dir, preview_dir, meta_dir, log_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    fg_path = fg_dir / f"{slug}.fg"
+    preview_path = preview_dir / f"{slug}_ootp.png"
+    manifest_path = meta_dir / f"{slug}.manifest.json"
+    appearance_path = meta_dir / f"{slug}.appearance.json"
+    log_path = log_dir / "build.log"
+
+    pipeline_cmd = build_pipeline_args(args, fg_path)
+    pipeline = run_command(pipeline_cmd, PROJECT_ROOT)
+    require_ok(pipeline, "pipeline")
+
+    render_cmd = [
+        sys.executable,
+        "-m",
+        "ootp_faceforge.render",
+        str(fg_path),
+        str(preview_path),
+        "--size",
+        str(args.size),
+        "--aa",
+        str(args.aa),
+    ]
+    render = run_command(render_cmd, PROJECT_ROOT)
+    require_ok(render, "render")
+
+    log_path.write_text(
+        "\n".join([
+            "$ " + " ".join(pipeline_cmd),
+            pipeline["stdout"],
+            pipeline["stderr"],
+            "$ " + " ".join(render_cmd),
+            render["stdout"],
+            render["stderr"],
+        ]),
+        encoding="utf-8",
+    )
+
+    appearance = {
+        "schema_version": 1,
+        "player": name,
+        "slug": slug,
+        "hair": None,
+        "hair_color": None,
+        "facial_hair": None,
+        "cap": None,
+        "notes": "OOTP appearance is separate from the .fg face file.",
+    }
+    if not appearance_path.exists() or getattr(args, "overwrite_meta", False):
+        appearance_path.write_text(
+            json.dumps(appearance, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    manifest = {
+        "schema_version": 1,
+        "product": "OOTP FaceForge",
+        "generated_at": now_iso(),
+        "player": {
+            "name": name,
+            "slug": slug,
+        },
+        "inputs": {
+            "photos": str(photos),
+            "profile": args.profile,
+            "texture_photo": getattr(args, "texture_photo", None),
+        },
+        "outputs": {
+            "fg": str(fg_path),
+            "preview": str(preview_path),
+            "appearance": str(appearance_path),
+            "log": str(log_path),
+        },
+        "diagnostics": parse_pipeline_summary(pipeline["stdout"]),
+        "commands": {
+            "pipeline": pipeline_cmd,
+            "render": render_cmd,
+        },
+    }
+    if getattr(args, "flat_copy", False):
+        flat_fg = Path(args.out_dir) / f"{slug}.fg"
+        flat_preview = Path(args.out_dir) / f"{slug}.png"
+        shutil.copy2(fg_path, flat_fg)
+        shutil.copy2(preview_path, flat_preview)
+        manifest["outputs"]["flat_fg"] = str(flat_fg)
+        manifest["outputs"]["flat_preview"] = str(flat_preview)
+
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"built {name}")
+    print(f"  fg:       {fg_path}")
+    print(f"  preview:  {preview_path}")
+    print(f"  manifest: {manifest_path}")
+    return manifest
+
+
+def render_only(args: argparse.Namespace) -> None:
+    cmd = [
+        sys.executable,
+        "-m",
+        "ootp_faceforge.render",
+        str(Path(args.fg)),
+        str(Path(args.out)),
+        "--basis",
+        args.basis,
+        "--size",
+        str(args.size),
+        "--aa",
+        str(args.aa),
+    ]
+    if args.no_eyes:
+        cmd.append("--no-eyes")
+    if args.flat:
+        cmd.append("--flat")
+    result = run_command(cmd, PROJECT_ROOT)
+    require_ok(result, "render")
+    sys.stdout.write(result["stdout"])
+    sys.stderr.write(result["stderr"])
+
+
+def batch(args: argparse.Namespace) -> None:
+    data = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    if not isinstance(data, list):
+        raise SystemExit("batch file must be a JSON list")
+    for item in data:
+        if not isinstance(item, dict):
+            raise SystemExit("each batch item must be an object")
+        merged = argparse.Namespace(**vars(args))
+        for key, value in item.items():
+            setattr(merged, key.replace("-", "_"), value)
+        if not getattr(merged, "photos", None):
+            raise SystemExit("batch item missing photos")
+        if not getattr(merged, "profile", None):
+            merged.profile = "identity"
+        build_player(merged)
+
+
+def launch_gui(args: argparse.Namespace) -> None:
+    from .gui import main as gui_main
+
+    gui_main()
+
+
+def add_build_options(p: argparse.ArgumentParser) -> None:
+    p.add_argument("photos", help="Photo folder or single image.")
+    p.add_argument("--name", help="Display name for manifests.")
+    p.add_argument("--slug", help="Output slug. Defaults to the name/photo folder.")
+    p.add_argument("--out-dir", default=str(DEFAULT_OUT))
+    p.add_argument("--profile", choices=sorted(PROFILES), default="identity")
+    p.add_argument("--texture-photo",
+                   help="Substring/path of the texture/detail photo to force.")
+    p.add_argument("--max-yaw", type=float)
+    p.add_argument("--shape-lam", type=float)
+    p.add_argument("--asym-lam", type=float)
+    p.add_argument("--dense-weight", type=float)
+    p.add_argument("--tex-lam", type=float)
+    p.add_argument("--tex-erode", type=int)
+    p.add_argument("--exposure-lo", type=float)
+    p.add_argument("--exposure-hi", type=float)
+    p.add_argument("--detail-size", type=int)
+    p.add_argument("--detail-strength", type=float)
+    p.add_argument("--detail-chroma-strength", type=float)
+    p.add_argument("--detail-edge-strength", type=float)
+    p.add_argument("--detail-flat-neutralize", type=float)
+    p.add_argument("--detail-jpeg-quality", type=int)
+    p.add_argument("--eye-detail-strength", type=float)
+    p.add_argument("--detail-min-cos", type=float)
+    p.add_argument("--debug-dir",
+                   help="Optional directory for intermediate texture/debug images.")
+    p.add_argument("--size", type=int, default=512)
+    p.add_argument("--aa", type=int, default=2)
+    p.add_argument("--flat-copy", action="store_true",
+                   help="Also copy .fg and preview directly under --out-dir.")
+    p.add_argument("--overwrite-meta", action="store_true",
+                   help="Rewrite existing appearance sidecar.")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="ootp-faceforge",
+        description="Build OOTP FaceGen .fg files from player photo folders.",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    build = sub.add_parser("build", help="Build one player package.")
+    add_build_options(build)
+    build.set_defaults(func=build_player)
+
+    render = sub.add_parser("render", help="Render an existing .fg preview.")
+    render.add_argument("fg")
+    render.add_argument("out")
+    render.add_argument("--basis", choices=("ootp", "si"), default="ootp")
+    render.add_argument("--size", type=int, default=512)
+    render.add_argument("--aa", type=int, default=2)
+    render.add_argument("--no-eyes", action="store_true")
+    render.add_argument("--flat", action="store_true")
+    render.set_defaults(func=render_only)
+
+    batch_cmd = sub.add_parser("batch", help="Build a JSON list of players.")
+    batch_cmd.add_argument("file")
+    batch_cmd.add_argument("--out-dir", default=str(DEFAULT_OUT))
+    batch_cmd.add_argument("--size", type=int, default=512)
+    batch_cmd.add_argument("--aa", type=int, default=2)
+    batch_cmd.add_argument("--flat-copy", action="store_true")
+    batch_cmd.add_argument("--overwrite-meta", action="store_true")
+    batch_cmd.set_defaults(func=batch)
+
+    gui = sub.add_parser("gui", help="Open the desktop GUI.")
+    gui.set_defaults(func=launch_gui)
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
