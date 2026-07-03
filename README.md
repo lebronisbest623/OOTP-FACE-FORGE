@@ -120,20 +120,22 @@ ootp-faceforge build photos_in\park_yongtaek --texture-photo official
 
 ## Batch Builds
 
-Create a JSON batch file:
+The GUI batch button can build from selected photos or from folders. In the CLI,
+pass image files, player photo folders, or a parent folder containing player
+folders:
 
-```json
-[
-  {
-    "name": "Park Yong-taek",
-    "slug": "park_yong-taek",
-    "photos": "photos_in/park_yongtaek",
-    "profile": "identity"
-  }
-]
+```powershell
+# Build one .fg per selected image file, using each file stem as the name.
+ootp-faceforge batch photos_in\headshots\player_a.jpg photos_in\headshots\player_b.png
+
+# Build one .fg from a player photo folder, using the folder name.
+ootp-faceforge batch photos_in\park_yongtaek
+
+# Build every immediate child folder that contains photos.
+ootp-faceforge batch photos_in
 ```
 
-Run:
+JSON batch files are still accepted for advanced scripted builds:
 
 ```powershell
 ootp-faceforge batch examples\park_yongtaek.json

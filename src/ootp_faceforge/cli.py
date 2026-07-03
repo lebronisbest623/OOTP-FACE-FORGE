@@ -19,6 +19,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent.parent
 DEFAULT_OUT = PROJECT_ROOT / "dist"
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 PROFILES: dict[str, list[str]] = {
     "identity": [],
@@ -146,6 +147,54 @@ def parse_pipeline_summary(stdout: str) -> dict[str, Any]:
         elif line.startswith("detail coverage:"):
             summary["detail_coverage"] = line.partition(":")[2].strip()
     return summary
+
+
+def _has_images(path: Path) -> bool:
+    return path.is_dir() and any(
+        p.is_file() and p.suffix.lower() in IMAGE_EXTS
+        for p in path.iterdir()
+    )
+
+
+def _dedupe_batch_slugs(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: dict[str, int] = {}
+    out: list[dict[str, Any]] = []
+    for item in items:
+        merged = dict(item)
+        base = slugify(str(merged.get("slug") or merged.get("name") or "player"))
+        seen[base] = seen.get(base, 0) + 1
+        merged["slug"] = base if seen[base] == 1 else f"{base}_{seen[base]}"
+        out.append(merged)
+    return out
+
+
+def expand_path_batch_items(inputs: list[str | Path]) -> list[dict[str, Any]]:
+    """Turn selected image files or folders into automatic batch build items."""
+    items: list[dict[str, Any]] = []
+    for raw in inputs:
+        path = Path(raw)
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTS:
+            items.append({"name": path.stem, "photos": str(path)})
+            continue
+        if not path.is_dir():
+            continue
+        if _has_images(path):
+            items.append({"name": path.name, "photos": str(path)})
+            continue
+        children = sorted(p for p in path.iterdir() if p.is_dir() and _has_images(p))
+        items.extend({"name": child.name, "photos": str(child)} for child in children)
+    if not items:
+        raise ValueError("no image files or photo folders found")
+    return _dedupe_batch_slugs(items)
+
+
+def load_batch_items(inputs: list[str | Path]) -> list[dict[str, Any]]:
+    if len(inputs) == 1 and Path(inputs[0]).suffix.lower() == ".json":
+        data = json.loads(Path(inputs[0]).read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError("batch file must be a JSON list")
+        return data
+    return expand_path_batch_items(inputs)
 
 
 def build_pipeline_args(args: argparse.Namespace, fg_path: Path) -> list[str]:
@@ -315,10 +364,11 @@ def render_only(args: argparse.Namespace) -> None:
 
 
 def batch(args: argparse.Namespace) -> None:
-    data = json.loads(Path(args.file).read_text(encoding="utf-8"))
-    if not isinstance(data, list):
-        raise SystemExit("batch file must be a JSON list")
-    for item in data:
+    try:
+        items = load_batch_items(args.inputs)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    for item in items:
         if not isinstance(item, dict):
             raise SystemExit("each batch item must be an object")
         merged = argparse.Namespace(**vars(args))
@@ -392,8 +442,11 @@ def parse_args() -> argparse.Namespace:
     render.add_argument("--flat", action="store_true")
     render.set_defaults(func=render_only)
 
-    batch_cmd = sub.add_parser("batch", help="Build a JSON list of players.")
-    batch_cmd.add_argument("file")
+    batch_cmd = sub.add_parser(
+        "batch",
+        help="Build selected image files, photo folders, parent folders, or a JSON list.",
+    )
+    batch_cmd.add_argument("inputs", nargs="+")
     batch_cmd.add_argument("--out-dir", default=str(DEFAULT_OUT))
     batch_cmd.add_argument("--size", type=int, default=512)
     batch_cmd.add_argument("--aa", type=int, default=2)

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import json
 import os
 import queue
 import subprocess
@@ -15,7 +14,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from .cli import DEFAULT_OUT, PROJECT_ROOT, build_player
+from .cli import DEFAULT_OUT, PROJECT_ROOT, build_player, expand_path_batch_items
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -44,7 +43,6 @@ class FaceForgeApp(tk.Tk):
         )
         self.status_var = tk.StringVar(value="Ready")
         self.photo_count_var = tk.StringVar(value="")
-        self.batch_file_var = tk.StringVar(value="")
 
         self._configure_style()
         self._build_ui()
@@ -146,8 +144,8 @@ class FaceForgeApp(tk.Tk):
 
         self.batch_button = tk.Button(
             controls,
-            text="Build Batch...",
-            command=self._choose_batch,
+            text="Build Batch",
+            command=self._show_batch_menu,
             bg="#ffffff",
             fg="#1d1d1f",
             activebackground="#f5f5f7",
@@ -221,7 +219,7 @@ class FaceForgeApp(tk.Tk):
             return
         self.progress.stop()
         self.build_button.configure(state="normal", text="Build FaceGen")
-        self.batch_button.configure(state="normal", text="Build Batch...")
+        self.batch_button.configure(state="normal", text="Build Batch")
 
     def _build(self) -> None:
         photos = Path(self.photos_var.get())
@@ -239,19 +237,45 @@ class FaceForgeApp(tk.Tk):
         thread = threading.Thread(target=self._build_worker, daemon=True)
         thread.start()
 
-    def _choose_batch(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Choose batch JSON",
-            initialdir=str(PROJECT_ROOT / "examples"),
-            filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+    def _show_batch_menu(self) -> None:
+        menu = tk.Menu(self, tearoff=False, bg="#ffffff", fg="#1d1d1f")
+        menu.add_command(label="Photos...", command=self._choose_batch_photos)
+        menu.add_command(label="Folders...", command=self._choose_batch_folder)
+        menu.tk_popup(
+            self.batch_button.winfo_rootx(),
+            self.batch_button.winfo_rooty() + self.batch_button.winfo_height(),
         )
-        if not path:
+
+    def _choose_batch_photos(self) -> None:
+        paths = filedialog.askopenfilenames(
+            title="Choose player photos",
+            initialdir=str(PROJECT_ROOT / "photos_in"),
+            filetypes=(
+                ("Images", "*.jpg *.jpeg *.png *.webp *.bmp"),
+                ("All files", "*.*"),
+            ),
+        )
+        if paths:
+            self._start_batch([Path(path) for path in paths])
+
+    def _choose_batch_folder(self) -> None:
+        path = filedialog.askdirectory(
+            title="Choose a player folder or a folder containing player folders",
+            initialdir=str(PROJECT_ROOT / "photos_in"),
+        )
+        if path:
+            self._start_batch([Path(path)])
+
+    def _start_batch(self, paths: list[Path]) -> None:
+        try:
+            items = expand_path_batch_items(paths)
+        except ValueError as exc:
+            messagebox.showerror("No photos", str(exc))
             return
-        self.batch_file_var.set(path)
         self.logs.clear()
         self.batch_button.configure(text="Building batch...")
         self._set_busy(True, "Building batch...")
-        thread = threading.Thread(target=self._batch_worker, args=(Path(path),), daemon=True)
+        thread = threading.Thread(target=self._batch_worker, args=(items,), daemon=True)
         thread.start()
 
     def _build_worker(self) -> None:
@@ -290,18 +314,15 @@ class FaceForgeApp(tk.Tk):
         except Exception as exc:
             self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
 
-    def _batch_worker(self, batch_path: Path) -> None:
+    def _batch_worker(self, items: list[dict]) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
         manifests = []
         try:
-            data = json.loads(batch_path.read_text(encoding="utf-8"))
-            if not isinstance(data, list):
-                raise ValueError("batch file must be a JSON list")
-            total = len(data)
+            total = len(items)
             if total == 0:
-                raise ValueError("batch file is empty")
-            for idx, item in enumerate(data, 1):
+                raise ValueError("batch is empty")
+            for idx, item in enumerate(items, 1):
                 if not isinstance(item, dict):
                     raise ValueError(f"batch item {idx} must be an object")
                 if not item.get("photos"):
