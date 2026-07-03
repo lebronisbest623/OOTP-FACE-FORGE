@@ -1,7 +1,7 @@
 """Load the FaceGen SI statistical appearance model from the Modeller demo data."""
 from __future__ import annotations
 import struct
-from functools import cached_property
+from functools import cached_property, lru_cache
 
 import numpy as np
 from PIL import Image
@@ -55,7 +55,8 @@ class Basis:
         py = np.clip(((1 - uv[:, 1]) * H).astype(int), 0, H - 1)
         return self.fim[py, px]
 
-    def surface_points(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+    @cached_property
+    def _surface_points_cache(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
         """name -> (base_pos (3,), B (3,80)) linear model pos = base + B @ coeffs."""
         out = {}
         for name, (fidx, bary) in self.tri.surface_points.items():
@@ -66,6 +67,9 @@ class Basis:
             out[name] = (base, B)
         return out
 
+    def surface_points(self) -> dict[str, tuple[np.ndarray, np.ndarray]]:
+        return self._surface_points_cache
+
     def shaped_verts(self, coeffs: np.ndarray) -> np.ndarray:
         """All vertices for coefficient vector (80,)."""
         return self.verts + np.einsum("m,mvd->vd", coeffs.astype(np.float32), self.modes)
@@ -75,3 +79,9 @@ class Basis:
         s = self.mean_tex + np.einsum("m,mrcd->rcd",
                                       tex_coeffs.astype(np.float32), self.egt.sym)
         return np.clip(s, 0, 255)
+
+
+@lru_cache(maxsize=4)
+def get_basis(pf: str = PF) -> Basis:
+    """Load a FaceGen basis once and reuse it across batch builds."""
+    return Basis(pf)

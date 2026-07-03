@@ -409,7 +409,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    args.func(args)
+    try:
+        args.func(args)
+    finally:
+        from .landmarks import close_landmarker
+
+        close_landmarker()
 
 
 if __name__ == "__main__":

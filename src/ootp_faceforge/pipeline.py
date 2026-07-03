@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .basis import Basis
+from .basis import get_basis
 from .fgformat import FgFile
 from .fit import fit_shape_multi_dense, project
 from .landmarks import FACE_OVAL, detect, exposure_gain, face_mask, illum_correct
@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> None:
     if debug_dir:
         debug_dir.mkdir(parents=True, exist_ok=True)
 
-    basis = Basis()
+    basis = get_basis()
     images: list[np.ndarray] = []
     landmarks: list[np.ndarray] = []
     metrics: list[dict] = []

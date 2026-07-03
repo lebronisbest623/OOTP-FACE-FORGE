@@ -13,13 +13,14 @@ import argparse
 import io
 import struct
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 import cv2
 import numpy as np
 from PIL import Image
 
-from .basis import Basis
+from .basis import get_basis
 from .fgformat import Egm, Egt, FgFile, TriMesh
 from .texture import uv_px
 
@@ -38,6 +39,19 @@ class RenderAsset:
     tris: np.ndarray
     src_px: np.ndarray
     tex: np.ndarray
+    orientation: str
+
+
+@dataclass
+class RenderSourceAsset:
+    name: str
+    verts: np.ndarray
+    modes: np.ndarray
+    tris: np.ndarray
+    src_px: np.ndarray
+    base_tex: np.ndarray
+    tex_modes: np.ndarray
+    fim: np.ndarray | None
     orientation: str
 
 
@@ -102,29 +116,55 @@ def _triangulate_facets(mesh: TriMesh, tex_width: int,
     return np.stack(tris), np.stack(uvs).astype(np.float32)
 
 
-def _build_ootp_asset(fg: FgFile, stem: str = "face_hi",
-                      apply_detail: bool = True,
-                      texture_name: str | None = None) -> RenderAsset:
+@lru_cache(maxsize=8)
+def _load_ootp_source_asset(stem: str,
+                            texture_name: str) -> RenderSourceAsset:
     mesh = TriMesh.read(str(OOTP_3D / f"{stem}.tri"))
     egm = Egm.read(str(OOTP_3D / f"{stem}.egm"))
     egt = Egt.read(str(OOTP_3D / f"{stem}.egt"))
-    texture_name = texture_name or f"{stem}.png"
     base = np.asarray(Image.open(OOTP_3D / texture_name).convert("RGB"),
                       np.float32)
     h, w = base.shape[:2]
-
-    coeff_tex = np.einsum("m,mrcd->rcd", fg.sym_tex.astype(np.float32), egt.sym)
-    coeff_tex = cv2.resize(coeff_tex, (w, h), interpolation=cv2.INTER_LINEAR)
-    tex = base + coeff_tex
-    fim_path = OOTP_3D / f"{stem}.fim"
-    if apply_detail and fim_path.exists():
-        tex = tex * _detail_modulation(_read_fim(fim_path), fg, w, h)
-    tex = np.clip(tex, 0, 255).astype(np.float32)
-
     tris, src_px = _triangulate_facets(mesh, w, h)
     modes = np.concatenate([egm.sym, egm.asym], 0)
-    return RenderAsset(f"ootp-{stem}", mesh.verts, modes, tris, src_px, tex,
-                       "ootp")
+    fim_path = OOTP_3D / f"{stem}.fim"
+    fim = _read_fim(fim_path) if fim_path.exists() else None
+    return RenderSourceAsset(
+        f"ootp-{stem}",
+        mesh.verts,
+        modes,
+        tris,
+        src_px,
+        base,
+        egt.sym,
+        fim,
+        "ootp",
+    )
+
+
+def _build_ootp_asset(fg: FgFile, stem: str = "face_hi",
+                      apply_detail: bool = True,
+                      texture_name: str | None = None) -> RenderAsset:
+    texture_name = texture_name or f"{stem}.png"
+    source = _load_ootp_source_asset(stem, texture_name)
+    h, w = source.base_tex.shape[:2]
+    coeff_tex = np.einsum("m,mrcd->rcd", fg.sym_tex.astype(np.float32),
+                          source.tex_modes)
+    coeff_tex = cv2.resize(coeff_tex, (w, h), interpolation=cv2.INTER_LINEAR)
+    tex = source.base_tex + coeff_tex
+    if apply_detail and source.fim is not None:
+        tex = tex * _detail_modulation(source.fim, fg, w, h)
+    tex = np.clip(tex, 0, 255).astype(np.float32)
+
+    return RenderAsset(
+        source.name,
+        source.verts,
+        source.modes,
+        source.tris,
+        source.src_px,
+        tex,
+        source.orientation,
+    )
 
 
 def _build_ootp_assets(fg: FgFile, include_eyes: bool) -> list[RenderAsset]:
@@ -140,7 +180,7 @@ def _build_ootp_assets(fg: FgFile, include_eyes: bool) -> list[RenderAsset]:
 
 
 def _build_si_asset(fg: FgFile) -> RenderAsset:
-    basis = Basis()
+    basis = get_basis()
     tex = _compose_si_texture(basis, fg)
     return RenderAsset(
         "facegen-si",

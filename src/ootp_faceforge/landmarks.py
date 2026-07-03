@@ -2,6 +2,7 @@
 surface-point <-> mediapipe index correspondence."""
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import numpy as np
@@ -51,6 +52,7 @@ for n in ("JAW_OUTER_LEFT", "JAW_OUTER_RIGHT", "CHEEKBONE_LEFT", "CHEEKBONE_RIGH
 
 
 MODEL = str(Path(__file__).with_name("face_landmarker.task"))
+_LANDMARKER = None
 
 # mediapipe FACE_OVAL landmark loop (standard ordering)
 FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397,
@@ -155,21 +157,40 @@ def illum_correct(img_rgb: np.ndarray, mask: np.ndarray,
     return np.clip(out, 0, 255)
 
 
-def detect(img_rgb: np.ndarray) -> np.ndarray:
-    """Return (478, 2) pixel coords of mediapipe landmarks, or raise."""
-    import mediapipe as mp
+def close_landmarker() -> None:
+    global _LANDMARKER
+    if _LANDMARKER is not None:
+        with contextlib.suppress(Exception):
+            _LANDMARKER.close()
+        _LANDMARKER = None
+
+
+def _get_landmarker():
+    global _LANDMARKER
+    if _LANDMARKER is not None:
+        return _LANDMARKER
+
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import vision
 
-    h, w = img_rgb.shape[:2]
     opts = vision.FaceLandmarkerOptions(
         base_options=mp_python.BaseOptions(model_asset_path=MODEL),
-        running_mode=vision.RunningMode.IMAGE, num_faces=1,
-        min_face_detection_confidence=0.3)
-    with vision.FaceLandmarker.create_from_options(opts) as lmk:
-        mp_img = mp.Image(image_format=mp.ImageFormat.SRGB,
-                          data=np.ascontiguousarray(img_rgb))
-        res = lmk.detect(mp_img)
+        running_mode=vision.RunningMode.IMAGE,
+        num_faces=1,
+        min_face_detection_confidence=0.3,
+    )
+    _LANDMARKER = vision.FaceLandmarker.create_from_options(opts)
+    return _LANDMARKER
+
+
+def detect(img_rgb: np.ndarray) -> np.ndarray:
+    """Return (478, 2) pixel coords of mediapipe landmarks, or raise."""
+    import mediapipe as mp
+
+    h, w = img_rgb.shape[:2]
+    mp_img = mp.Image(image_format=mp.ImageFormat.SRGB,
+                      data=np.ascontiguousarray(img_rgb))
+    res = _get_landmarker().detect(mp_img)
     if not res.face_landmarks:
         raise RuntimeError("no face detected")
     lm = res.face_landmarks[0]

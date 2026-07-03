@@ -408,8 +408,13 @@ class FaceForgeApp(tk.Tk):
 
 
 def main() -> None:
+    from .landmarks import close_landmarker
+
     app = FaceForgeApp()
-    app.mainloop()
+    try:
+        app.mainloop()
+    finally:
+        close_landmarker()
 
 
 if __name__ == "__main__":

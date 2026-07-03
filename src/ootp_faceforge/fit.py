@@ -176,8 +176,11 @@ def fit_shape_dense(basis: Basis, lms_px: np.ndarray,
     s, R2, t = _pose(X, u, w)
     R = np.vstack([R2, np.cross(R2[0], R2[1])])
     resid_px = np.sqrt((((s * X @ R2.T + t) - u) ** 2).sum(1))
-    return c, s, R, t, {"n_dense": len(pairs),
-                        "mean_resid": float((resid_px * w).sum() / w.sum())}
+    return c, s, R, t, {
+        "n_dense": len(pairs),
+        "mean_resid": float((resid_px * w).sum() / w.sum()),
+        "pairs": pairs,
+    }
 
 
 def _load_dense_pairs(basis: Basis, lms_px: np.ndarray, coeffs, s, R, t):
@@ -247,7 +250,9 @@ def fit_shape_multi_dense(basis: Basis, lms_list: list[np.ndarray],
     observations = []
     for lms, single in zip(lms_list, singles):
         c0, s0, R0, t0, _ = single
-        pairs = _load_dense_pairs(basis, lms, c0, s0, R0, t0)
+        pairs = single[4].get("pairs")
+        if pairs is None:
+            pairs = _load_dense_pairs(basis, lms, c0, s0, R0, t0)
         observations.append(_dense_observation_arrays(basis, lms, pairs, dense_weight))
 
     sp = basis.surface_points()
