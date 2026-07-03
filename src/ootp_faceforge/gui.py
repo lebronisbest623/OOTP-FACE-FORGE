@@ -7,6 +7,7 @@ import os
 import queue
 import subprocess
 import threading
+import time
 import tkinter as tk
 from argparse import Namespace
 from pathlib import Path
@@ -20,6 +21,27 @@ from .cli import DEFAULT_OUT, PROJECT_ROOT, build_player, expand_path_batch_item
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 DEFAULT_PROFILE = "identity"
 APP_ICON = Path(__file__).resolve().parent / "assets" / "icon.ico"
+
+
+def _format_duration(seconds: float | None) -> str:
+    if seconds is None:
+        return "--:--"
+    seconds = max(0, int(round(seconds)))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def _eta_label(started_at: float, done: int, total: int) -> str:
+    remaining = total - done
+    if remaining <= 0:
+        return ""
+    if done <= 0:
+        return " - ETA --:--"
+    elapsed = time.perf_counter() - started_at
+    return f" - ETA {_format_duration((elapsed / done) * remaining)}"
 
 
 class FaceForgeApp(tk.Tk):
@@ -247,7 +269,7 @@ class FaceForgeApp(tk.Tk):
             self._set_busy(True)
             thread = threading.Thread(target=self._build_worker, args=(items[0],), daemon=True)
         else:
-            self._set_busy(True, f"Building 0/{len(items)}", total=len(items))
+            self._set_busy(True, f"Building 0/{len(items)} - ETA --:--", total=len(items))
             thread = threading.Thread(target=self._batch_worker, args=(items,), daemon=True)
         thread.start()
 
@@ -320,13 +342,23 @@ class FaceForgeApp(tk.Tk):
             total = len(items)
             if total == 0:
                 raise ValueError("batch is empty")
+            started_at = time.perf_counter()
             for idx, item in enumerate(items, 1):
                 if not isinstance(item, dict):
                     raise ValueError(f"batch item {idx} must be an object")
                 if not item.get("photos"):
                     raise ValueError(f"batch item {idx} missing photos")
                 name = item.get("name") or Path(str(item["photos"])).name
-                self.events.put(("status", f"Building {idx}/{total}: {name}"))
+                done_before = idx - 1
+                self.events.put((
+                    "progress",
+                    (
+                        done_before,
+                        total,
+                        f"Building {idx}/{total}: {name}"
+                        f"{_eta_label(started_at, done_before, total)}",
+                    ),
+                ))
                 args = Namespace(
                     photos=item["photos"],
                     name=item.get("name"),
@@ -360,13 +392,37 @@ class FaceForgeApp(tk.Tk):
                 try:
                     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                         manifests.append(build_player(args))
-                    self.events.put(("progress", (idx, total, f"Built {idx}/{total}: {name}")))
+                    self.events.put((
+                        "progress",
+                        (
+                            idx,
+                            total,
+                            f"Built {idx}/{total}: {name}"
+                            f"{_eta_label(started_at, idx, total)}",
+                        ),
+                    ))
                 except SystemExit as exc:
                     failures.append((name, str(exc)))
-                    self.events.put(("progress", (idx, total, f"Skipped {idx}/{total}: {name}")))
+                    self.events.put((
+                        "progress",
+                        (
+                            idx,
+                            total,
+                            f"Skipped {idx}/{total}: {name}"
+                            f"{_eta_label(started_at, idx, total)}",
+                        ),
+                    ))
                 except Exception as exc:
                     failures.append((name, str(exc)))
-                    self.events.put(("progress", (idx, total, f"Skipped {idx}/{total}: {name}")))
+                    self.events.put((
+                        "progress",
+                        (
+                            idx,
+                            total,
+                            f"Skipped {idx}/{total}: {name}"
+                            f"{_eta_label(started_at, idx, total)}",
+                        ),
+                    ))
             self.events.put((
                 "batch_done",
                 (manifests, failures, stdout.getvalue(), stderr.getvalue()),
