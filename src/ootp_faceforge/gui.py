@@ -226,16 +226,23 @@ class FaceForgeApp(tk.Tk):
         if text:
             self.logs.append(text)
 
-    def _set_busy(self, busy: bool, label: str = "Building...") -> None:
+    def _set_busy(self, busy: bool, label: str = "Building...",
+                  total: int | None = None) -> None:
         if busy:
             self.status_var.set(label)
             self.output_button.configure(state="disabled")
             self.build_button.configure(state="disabled")
             self.batch_button.configure(state="disabled")
             self.folder_batch_button.configure(state="disabled")
-            self.progress.start(12)
+            self.progress.stop()
+            if total:
+                self.progress.configure(mode="determinate", maximum=total, value=0)
+            else:
+                self.progress.configure(mode="indeterminate", value=0)
+                self.progress.start(12)
             return
         self.progress.stop()
+        self.progress.configure(mode="indeterminate", value=0)
         self.build_button.configure(state="normal", text="Build FaceGen")
         self.batch_button.configure(state="normal", text="Build Photos")
         self.folder_batch_button.configure(state="normal", text="Build Folders")
@@ -284,7 +291,7 @@ class FaceForgeApp(tk.Tk):
             return
         self.logs.clear()
         self.batch_button.configure(text="Building batch...")
-        self._set_busy(True, "Building batch...")
+        self._set_busy(True, f"Building 0/{len(items)}", total=len(items))
         thread = threading.Thread(target=self._batch_worker, args=(items,), daemon=True)
         thread.start()
 
@@ -321,6 +328,8 @@ class FaceForgeApp(tk.Tk):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 manifest = build_player(args)
             self.events.put(("done", (manifest, stdout.getvalue(), stderr.getvalue())))
+        except SystemExit as exc:
+            self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
         except Exception as exc:
             self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
 
@@ -328,6 +337,7 @@ class FaceForgeApp(tk.Tk):
         stdout = io.StringIO()
         stderr = io.StringIO()
         manifests = []
+        failures = []
         try:
             total = len(items)
             if total == 0:
@@ -369,9 +379,20 @@ class FaceForgeApp(tk.Tk):
                     overwrite_meta=item.get("overwrite_meta", True),
                 )
                 self._apply_default_detail_args(args)
-                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                    manifests.append(build_player(args))
-            self.events.put(("batch_done", (manifests, stdout.getvalue(), stderr.getvalue())))
+                try:
+                    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        manifests.append(build_player(args))
+                    self.events.put(("progress", (idx, total, f"Built {idx}/{total}: {name}")))
+                except SystemExit as exc:
+                    failures.append((name, str(exc)))
+                    self.events.put(("progress", (idx, total, f"Skipped {idx}/{total}: {name}")))
+                except Exception as exc:
+                    failures.append((name, str(exc)))
+                    self.events.put(("progress", (idx, total, f"Skipped {idx}/{total}: {name}")))
+            self.events.put((
+                "batch_done",
+                (manifests, failures, stdout.getvalue(), stderr.getvalue()),
+            ))
         except Exception as exc:
             self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
 
@@ -399,16 +420,29 @@ class FaceForgeApp(tk.Tk):
                     self._set_busy(False)
                     self.output_button.configure(state="normal")
                 elif kind == "batch_done":
-                    manifests, stdout, stderr = payload  # type: ignore[misc]
+                    manifests, failures, stdout, stderr = payload  # type: ignore[misc]
                     self._append_log(stdout)
                     self._append_log(stderr)
                     if manifests:
                         last_preview = Path(manifests[-1]["outputs"]["preview"])
                         self._show_preview(last_preview)
                         self.last_output = Path(manifests[-1]["outputs"]["fg"]).parents[2]
-                    self.status_var.set(f"Batch complete: {len(manifests)} built")
+                        self.output_button.configure(state="normal")
+                    skipped = len(failures)
+                    self.status_var.set(
+                        f"Batch complete: {len(manifests)} built"
+                        + (f", {skipped} skipped" if skipped else "")
+                    )
                     self._set_busy(False)
-                    self.output_button.configure(state="normal")
+                    if failures:
+                        names = ", ".join(name for name, _ in failures[:4])
+                        if len(failures) > 4:
+                            names += f", +{len(failures) - 4} more"
+                        messagebox.showwarning("Batch skipped photos", names)
+                elif kind == "progress":
+                    done, total, label = payload  # type: ignore[misc]
+                    self.progress.configure(value=done, maximum=total)
+                    self.status_var.set(str(label))
                 elif kind == "status":
                     self.status_var.set(str(payload))
                 elif kind == "error":

@@ -368,6 +368,7 @@ def batch(args: argparse.Namespace) -> None:
         items = load_batch_items(args.inputs)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    failures: list[tuple[str, str]] = []
     for item in items:
         if not isinstance(item, dict):
             raise SystemExit("each batch item must be an object")
@@ -378,7 +379,14 @@ def batch(args: argparse.Namespace) -> None:
             raise SystemExit("batch item missing photos")
         if not getattr(merged, "profile", None):
             merged.profile = "identity"
-        build_player(merged)
+        name = getattr(merged, "name", None) or Path(str(merged.photos)).name
+        try:
+            build_player(merged)
+        except SystemExit as exc:
+            failures.append((name, str(exc)))
+            print(f"skipped {name}: {exc}", file=sys.stderr)
+    if failures:
+        raise SystemExit(f"batch completed with {len(failures)} skipped")
 
 
 def launch_gui(args: argparse.Namespace) -> None:
