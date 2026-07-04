@@ -147,6 +147,18 @@ def illum_correct(img_rgb: np.ndarray, mask: np.ndarray,
     out = img.copy()
     out[mask] = np.clip(img[mask] * gain[mask], 0, 255)
 
+    # Lift broad shadow fields without erasing local feature contrast. This is
+    # intentionally low-frequency: pores, nostrils, lip lines, and brows remain
+    # available to the detail map, while stadium/photo lighting stops becoming
+    # baked-in skin tone.
+    Y = out @ np.array([0.299, 0.587, 0.114], np.float32)
+    LFy = blur(Y * m) / denom
+    target = float(np.percentile(LFy[mask], 65))
+    dodge = target / np.maximum(LFy, 1.0)
+    dodge = np.clip(dodge, 0.82, 1.65)
+    dodge = 1.0 + 0.65 * (dodge - 1.0)
+    out[mask] = np.clip(out[mask] * dodge[mask, None], 0, 255)
+
     # soft-compress specular highlights inside the mask
     Y = out @ np.array([0.299, 0.587, 0.114], np.float32)
     knee = float(np.percentile(Y[mask], 90))

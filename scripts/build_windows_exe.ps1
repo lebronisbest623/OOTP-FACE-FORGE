@@ -69,6 +69,10 @@ python -m PyInstaller `
   --collect-binaries "mediapipe" `
   --hidden-import "ootp_faceforge.pipeline" `
   --hidden-import "ootp_faceforge.render" `
+  --hidden-import "ootp_faceforge.calibrate" `
+  --hidden-import "ootp_faceforge.emb2shape" `
+  --hidden-import "ootp_faceforge.identity" `
+  --hidden-import "ootp_faceforge.restore" `
   --hidden-import "mediapipe" `
   --hidden-import "mediapipe.tasks" `
   --hidden-import "mediapipe.tasks.python" `

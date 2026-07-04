@@ -98,6 +98,47 @@ def fit_tex_coeffs(basis: Basis, photo_uv: np.ndarray, cov: np.ndarray,
     return np.clip(coeffs, -4, 4)
 
 
+def fuse_maps(maps: list[np.ndarray], covs: list[np.ndarray],
+              weights: list[float], neutral: np.ndarray | float,
+              weight_power: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
+    """Quality-weighted fusion of same-space photo maps.
+
+    Invalid pixels fall back to neutral. The weight power lets the clearest
+    photo dominate a region without discarding useful coverage from others.
+    """
+    if not maps:
+        raise ValueError("fuse_maps requires at least one map")
+    if len(maps) != len(covs) or len(maps) != len(weights):
+        raise ValueError("maps, covs, and weights length must match")
+
+    first = np.asarray(maps[0], np.float32)
+    if np.isscalar(neutral):
+        out = np.full(first.shape, float(neutral), np.float32)
+    else:
+        out = np.asarray(neutral, np.float32).copy()
+        if out.shape != first.shape:
+            out = np.broadcast_to(out, first.shape).astype(np.float32).copy()
+
+    accum = np.zeros_like(first, np.float32)
+    wsum = np.zeros(first.shape[:2], np.float32)
+    power = max(float(weight_power), 0.01)
+    for src, cov, weight in zip(maps, covs, weights):
+        src = np.asarray(src, np.float32)
+        cov = np.asarray(cov, bool)
+        if src.shape != first.shape or cov.shape != first.shape[:2]:
+            raise ValueError("all maps and coverage masks must share shape")
+        w = max(float(weight), 0.0) ** power
+        if w <= 0:
+            continue
+        pix_w = cov.astype(np.float32) * w
+        accum += src * pix_w[..., None]
+        wsum += pix_w
+
+    valid = wsum > 1e-6
+    out[valid] = accum[valid] / wsum[valid, None]
+    return out, valid
+
+
 def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
                  tex_coeffs: np.ndarray, anchor_tri: int,
                  photo_valid: np.ndarray | None = None,
@@ -107,6 +148,7 @@ def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
                  chroma_strength: float = 0.08,
                  edge_strength: float = 0.85,
                  flat_neutralize: float = 0.45,
+                 shadow_neutralize: float = 0.8,
                  neutralize_eyes: bool = True,
                  eye_detail_strength: float = 0.0):
     """Returns detail modulation map (size,size,3) uint8 (64 = identity).
@@ -123,6 +165,8 @@ def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
     a_src = np.abs(np.cross(src_photo[:, 1] - src_photo[:, 0],
                             src_photo[:, 2] - src_photo[:, 0]))
     a_dst = np.abs(np.cross(dst[:, 1] - dst[:, 0], dst[:, 2] - dst[:, 0]))
+    if not tri_ok.any():
+        return np.full((size, size, 3), 64, np.uint8), np.zeros((size, size), bool)
     med_mag = np.median(a_dst[tri_ok] / np.maximum(a_src[tri_ok], 1e-6))
     tri_ok &= a_dst / np.maximum(a_src, 1e-6) < 4.0 * med_mag
 
@@ -169,6 +213,8 @@ def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
     D = np.clip(D + edge_strength * (D - blur), 0, 255)
 
     D = np.clip(64.0 + detail_strength * (D - 64.0), 0, 255)
+    D = _compress_dark_detail(D, valid)
+    D = _lift_detail_shadows(D, valid, shadow_neutralize)
     D = _neutralize_flat_detail(D, valid, flat_neutralize)
 
     if neutralize_eyes:
@@ -206,6 +252,36 @@ def _neutralize_flat_detail(D: np.ndarray, valid: np.ndarray,
     keep = np.maximum(edge_keep, feature_keep)
     blend = amount * (1.0 - keep) * valid.astype(np.float32)
     return 64.0 + (D - 64.0) * (1.0 - blend[..., None])
+
+
+def _compress_dark_detail(D: np.ndarray, valid: np.ndarray,
+                          floor: float = 52.0,
+                          slope: float = 0.18) -> np.ndarray:
+    """Soft-limit extreme dark detail values that usually come from shadows."""
+    luma = D @ np.array([0.299, 0.587, 0.114], np.float32)
+    dark = (luma < floor) & valid
+    if not dark.any():
+        return D
+    target = floor + (luma - floor) * float(np.clip(slope, 0.0, 1.0))
+    lift = np.maximum(target - luma, 0.0)
+    out = D.copy()
+    out[dark] = np.clip(out[dark] + lift[dark, None], 0, 255)
+    return out
+
+
+def _lift_detail_shadows(D: np.ndarray, valid: np.ndarray,
+                         amount: float) -> np.ndarray:
+    """Suppress baked-in low-frequency shadows while preserving feature edges."""
+    amount = float(np.clip(amount, 0.0, 1.0))
+    if amount <= 0 or not valid.any():
+        return D
+    luma = D @ np.array([0.299, 0.587, 0.114], np.float32)
+    low = cv2.GaussianBlur(luma - 64.0, (0, 0), 4.2)
+    shadow = np.minimum(low, 0.0)
+    micro = np.abs(luma - cv2.GaussianBlur(luma, (0, 0), 1.2))
+    edge_keep = np.clip((micro - 3.0) / 9.0, 0.0, 1.0)
+    lift = amount * (1.0 - edge_keep) * valid.astype(np.float32)
+    return np.clip(D - shadow[..., None] * lift[..., None], 0, 255)
 
 
 def _surface_point_detail_px(basis: Basis, name: str, size: int) -> np.ndarray:

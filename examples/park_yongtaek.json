@@ -2,7 +2,7 @@
   {
     "name": "Park Yong-taek",
     "slug": "park_yong-taek",
-    "photos": "photos_in/park_yongtaek",
+    "photos": "../FaceForgeWorkspace/photos/park_yongtaek",
     "profile": "identity"
   }
 ]

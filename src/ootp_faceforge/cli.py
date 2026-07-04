@@ -18,7 +18,15 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent.parent
-DEFAULT_OUT = PROJECT_ROOT / "dist"
+WORKSPACE_ROOT = Path(
+    os.environ.get("OOTP_FACEFORGE_WORKSPACE")
+    or (PROJECT_ROOT.parent / "FaceForgeWorkspace")
+).expanduser()
+WORKSPACE_PHOTOS = WORKSPACE_ROOT / "photos"
+WORKSPACE_EXPORTS = WORKSPACE_ROOT / "exports"
+WORKSPACE_DEBUG = WORKSPACE_ROOT / "debug"
+WORKSPACE_MODELS = WORKSPACE_ROOT / "models"
+DEFAULT_OUT = WORKSPACE_ROOT / "runs"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 PROFILES: dict[str, list[str]] = {
@@ -138,12 +146,20 @@ def parse_pipeline_summary(stdout: str) -> dict[str, Any]:
             summary.setdefault("skipped", []).append(line)
         elif line.startswith("texture photo:"):
             summary["texture_photo"] = line.partition(":")[2].strip()
+        elif line.startswith("texture mode:"):
+            summary["texture_mode"] = line.partition(":")[2].strip()
+        elif line.startswith("texture fusion:"):
+            summary["texture_fusion"] = line
+        elif line.startswith("identity:"):
+            summary["identity"] = line
         elif line.startswith("multi shape:"):
             summary["shape"] = line
         elif line.startswith("exposure gain:"):
             summary["exposure_gain"] = line.partition(":")[2].strip()
         elif line.startswith("tex fit:"):
             summary["texture_fit"] = line
+        elif line.startswith("detail fusion:"):
+            summary["detail_fusion"] = line
         elif line.startswith("detail coverage:"):
             summary["detail_coverage"] = line.partition(":")[2].strip()
     return summary
@@ -208,6 +224,7 @@ def build_pipeline_args(args: argparse.Namespace, fg_path: Path) -> list[str]:
     cmd.extend(PROFILES[args.profile])
     for option in (
         "texture_photo",
+        "texture_mode",
         "max_yaw",
         "shape_lam",
         "asym_lam",
@@ -221,9 +238,16 @@ def build_pipeline_args(args: argparse.Namespace, fg_path: Path) -> list[str]:
         "detail_chroma_strength",
         "detail_edge_strength",
         "detail_flat_neutralize",
+        "detail_shadow_neutralize",
         "detail_jpeg_quality",
         "eye_detail_strength",
         "detail_min_cos",
+        "restore",
+        "restore_model",
+        "id_refine",
+        "id_model",
+        "refine_size",
+        "refine_r_max",
         "debug_dir",
     ):
         add_optional_arg(cmd, option, getattr(args, option, None))
@@ -305,6 +329,7 @@ def build_player(args: argparse.Namespace) -> dict[str, Any]:
         "inputs": {
             "photos": str(photos),
             "profile": args.profile,
+            "texture_mode": getattr(args, "texture_mode", None) or "fuse",
             "texture_photo": getattr(args, "texture_photo", None),
         },
         "outputs": {
@@ -363,12 +388,38 @@ def render_only(args: argparse.Namespace) -> None:
     sys.stderr.write(result["stderr"])
 
 
-def batch(args: argparse.Namespace) -> None:
+def default_jobs() -> int:
+    """Worker count for parallel batch: most cores, leaving headroom."""
+    n = os.cpu_count() or 4
+    return max(1, min(n - 1, 12))
+
+
+def _ensure_worker_path() -> None:
+    src = str(PROJECT_ROOT / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+
+
+def _batch_build_one(
+    ns: argparse.Namespace,
+) -> tuple[str, str | None, dict[str, Any] | None]:
+    """Build one player in a worker process; capture output, return status."""
+    _ensure_worker_path()
+    name = getattr(ns, "name", None) or Path(str(ns.photos)).name
+    buf = io.StringIO()
     try:
-        items = load_batch_items(args.inputs)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    failures: list[tuple[str, str]] = []
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            manifest = build_player(ns)
+        return name, None, manifest
+    except SystemExit as exc:
+        return name, str(exc), None
+    except Exception as exc:  # noqa: BLE001 - report, do not abort the batch
+        return name, f"{type(exc).__name__}: {exc}", None
+
+
+def batch_namespaces(args: argparse.Namespace,
+                     items: list[dict[str, Any]]) -> list[argparse.Namespace]:
+    out: list[argparse.Namespace] = []
     for item in items:
         if not isinstance(item, dict):
             raise SystemExit("each batch item must be an object")
@@ -379,12 +430,73 @@ def batch(args: argparse.Namespace) -> None:
             raise SystemExit("batch item missing photos")
         if not getattr(merged, "profile", None):
             merged.profile = "identity"
-        name = getattr(merged, "name", None) or Path(str(merged.photos)).name
-        try:
-            build_player(merged)
-        except SystemExit as exc:
-            failures.append((name, str(exc)))
-            print(f"skipped {name}: {exc}", file=sys.stderr)
+        out.append(merged)
+    return out
+
+
+def run_batch(namespaces: list[argparse.Namespace], jobs: int | None = None,
+              progress=None, completed=None) -> list[tuple[str, str]]:
+    """Build many players, in parallel processes when it pays off.
+
+    progress(done, total, name, error|None) is called as each finishes.
+    completed(done, total, name, error|None, manifest|None) receives the full result.
+    Returns the list of (name, error) failures."""
+    total = len(namespaces)
+    jobs = default_jobs() if jobs is None else max(1, int(jobs))
+    failures: list[tuple[str, str]] = []
+
+    def report(done: int, name: str, err: str | None,
+               manifest: dict[str, Any] | None) -> None:
+        if err:
+            failures.append((name, err))
+        if progress:
+            progress(done, total, name, err)
+        if completed:
+            completed(done, total, name, err, manifest)
+
+    # Worker spawn re-imports the package + heavy deps (mediapipe/cv2), so
+    # small batches are faster sequentially.
+    if jobs <= 1 or total <= 2:
+        for i, ns in enumerate(namespaces, 1):
+            name, err, manifest = _batch_build_one(ns)
+            report(i, name, err, manifest)
+        return failures
+
+    # Spawned workers rebuild sys.path from the environment, so make sure the
+    # package is importable there even under the local `python ootp_facegen.py`.
+    src = str(PROJECT_ROOT / "src")
+    existing = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = src if not existing else src + os.pathsep + existing
+
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    done = 0
+    with ProcessPoolExecutor(max_workers=min(jobs, total)) as ex:
+        futures = [ex.submit(_batch_build_one, ns) for ns in namespaces]
+        for fut in as_completed(futures):
+            name, err, manifest = fut.result()
+            done += 1
+            report(done, name, err, manifest)
+    return failures
+
+
+def batch(args: argparse.Namespace) -> None:
+    try:
+        items = load_batch_items(args.inputs)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    namespaces = batch_namespaces(args, items)
+    jobs = getattr(args, "jobs", None) or default_jobs()
+    total = len(namespaces)
+    print(f"batch: {total} players, {min(jobs, total)} parallel workers")
+
+    def report(done: int, total: int, name: str, err: str | None) -> None:
+        if err:
+            print(f"[{done}/{total}] skipped {name}: {err}", file=sys.stderr)
+        else:
+            print(f"[{done}/{total}] built {name}")
+
+    failures = run_batch(namespaces, jobs=jobs, progress=report)
     if failures:
         raise SystemExit(f"batch completed with {len(failures)} skipped")
 
@@ -403,6 +515,8 @@ def add_build_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--profile", choices=sorted(PROFILES), default="identity")
     p.add_argument("--texture-photo",
                    help="Substring/path of the texture/detail photo to force.")
+    p.add_argument("--texture-mode", choices=("fuse", "best"), default="fuse",
+                   help="Fuse all usable photos or use the single best texture photo.")
     p.add_argument("--max-yaw", type=float)
     p.add_argument("--shape-lam", type=float)
     p.add_argument("--asym-lam", type=float)
@@ -416,9 +530,17 @@ def add_build_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--detail-chroma-strength", type=float)
     p.add_argument("--detail-edge-strength", type=float)
     p.add_argument("--detail-flat-neutralize", type=float)
+    p.add_argument("--detail-shadow-neutralize", type=float)
     p.add_argument("--detail-jpeg-quality", type=int)
     p.add_argument("--eye-detail-strength", type=float)
     p.add_argument("--detail-min-cos", type=float)
+    p.add_argument("--restore", choices=("auto", "off", "force"))
+    p.add_argument("--restore-model")
+    p.add_argument("--id-refine", type=int,
+                   help="0 disables; positive values enable slow experimental identity search.")
+    p.add_argument("--id-model")
+    p.add_argument("--refine-size", type=int)
+    p.add_argument("--refine-r-max", type=float)
     p.add_argument("--debug-dir",
                    help="Optional directory for intermediate texture/debug images.")
     p.add_argument("--size", type=int, default=512)
@@ -455,9 +577,12 @@ def parse_args() -> argparse.Namespace:
         help="Build selected image files, photo folders, parent folders, or a JSON list.",
     )
     batch_cmd.add_argument("inputs", nargs="+")
+    batch_cmd.add_argument("-j", "--jobs", type=int, default=None,
+                           help="Parallel worker processes (default: most cores).")
     batch_cmd.add_argument("--out-dir", default=str(DEFAULT_OUT))
     batch_cmd.add_argument("--size", type=int, default=512)
     batch_cmd.add_argument("--aa", type=int, default=2)
+    batch_cmd.add_argument("--texture-mode", choices=("fuse", "best"), default="fuse")
     batch_cmd.add_argument("--flat-copy", action="store_true")
     batch_cmd.add_argument("--overwrite-meta", action="store_true")
     batch_cmd.set_defaults(func=batch)

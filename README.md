@@ -11,6 +11,8 @@ MLB, or MLB Players, Inc.
 ## What It Does
 
 - Fits one shared FaceGen shape from multiple photos.
+- Fuses usable photos into shared texture/detail maps so additional good
+  references can improve the final face instead of only choosing one image.
 - Scores photos for yaw, mouth opening, cap shadow, and texture usefulness.
 - Builds OOTP `.fg` files with FaceGen shape, texture coefficients, and detail
   maps.
@@ -68,11 +70,10 @@ Or, without installing the package:
 python ootp_facegen.py gui
 ```
 
-Put several photos for one player in a local folder. The folder is ignored by
-Git by default:
+Put several photos for one player in the workspace photos folder:
 
 ```text
-photos_in/
+%USERPROFILE%\FaceForgeWorkspace\photos\
   park_yongtaek/
     front.jpg
     official.webp
@@ -82,13 +83,13 @@ photos_in/
 Build a player package:
 
 ```powershell
-ootp-faceforge build photos_in\park_yongtaek --name "Park Yong-taek"
+ootp-faceforge build $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek --name "Park Yong-taek"
 ```
 
-The output is written to:
+By default, output is written outside the source repo:
 
 ```text
-dist/
+%USERPROFILE%\FaceForgeWorkspace\runs\
   park_yong-taek/
     facegen/park_yong-taek.fg
     preview/park_yong-taek_ootp.png
@@ -97,25 +98,42 @@ dist/
     logs/build.log
 ```
 
-Generated output is ignored by Git by default.
+Set `OOTP_FACEFORGE_WORKSPACE` to use a different workspace root, or pass
+`--out-dir` for one build. Generated output inside the repo is ignored by Git by
+default, but keeping runs outside the repo makes development and release folders
+less noisy.
 
 ## Useful Build Profiles
 
 ```powershell
-# Default identity-oriented pipeline.
-ootp-faceforge build photos_in\park_yongtaek --name "Park Yong-taek"
+# Default OOTP in-game pipeline.
+ootp-faceforge build $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek --name "Park Yong-taek"
 
 # Strict front-only fitting for unstable photo sets.
-ootp-faceforge build photos_in\park_yongtaek --profile strict-front
+ootp-faceforge build $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek --profile strict-front
 
 # Softer mouth/detail handling for photos with visible teeth.
-ootp-faceforge build photos_in\park_yongtaek --profile mouth-soft
+ootp-faceforge build $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek --profile mouth-soft
 ```
 
 You can force a texture photo with any filename substring:
 
 ```powershell
-ootp-faceforge build photos_in\park_yongtaek --texture-photo official
+ootp-faceforge build $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek --texture-photo official
+```
+
+By default, texture/detail are fused from every usable photo. To compare against
+the older single-photo path, run:
+
+```powershell
+ootp-faceforge build $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek --texture-mode best
+```
+
+Low-resolution GFPGAN restoration is opt-in because it can add time and
+hallucinated detail:
+
+```powershell
+ootp-faceforge build $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek --restore auto
 ```
 
 ## Batch Builds
@@ -126,13 +144,13 @@ folders:
 
 ```powershell
 # Build one .fg per selected image file, using each file stem as the name.
-ootp-faceforge batch photos_in\headshots\player_a.jpg photos_in\headshots\player_b.png
+ootp-faceforge batch $env:USERPROFILE\FaceForgeWorkspace\photos\headshots\player_a.jpg $env:USERPROFILE\FaceForgeWorkspace\photos\headshots\player_b.png
 
 # Build one .fg from a player photo folder, using the folder name.
-ootp-faceforge batch photos_in\park_yongtaek
+ootp-faceforge batch $env:USERPROFILE\FaceForgeWorkspace\photos\park_yongtaek
 
 # Build every immediate child folder that contains photos.
-ootp-faceforge batch photos_in
+ootp-faceforge batch $env:USERPROFILE\FaceForgeWorkspace\photos
 ```
 
 JSON batch files are still accepted for advanced scripted builds:

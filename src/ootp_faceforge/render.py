@@ -231,8 +231,25 @@ def _shape_asset(asset: RenderAsset, fg: FgFile) -> np.ndarray:
     )
 
 
+def _tri_depth(dst_local: np.ndarray, zt: np.ndarray,
+               w: int, h: int) -> np.ndarray:
+    """Per-pixel depth of a triangle's plane over its local bbox grid.
+    Depth is linear in screen coordinates under the orthographic projection,
+    so it is recovered by fitting z = a*x + b*y + c through the 3 corners."""
+    A = np.array([[dst_local[0, 0], dst_local[0, 1], 1.0],
+                  [dst_local[1, 0], dst_local[1, 1], 1.0],
+                  [dst_local[2, 0], dst_local[2, 1], 1.0]])
+    try:
+        a, b, c = np.linalg.solve(A, zt.astype(np.float64))
+    except np.linalg.LinAlgError:
+        return np.full((h, w), float(zt.mean()))
+    gy, gx = np.mgrid[0:h, 0:w]
+    return a * gx + b * gy + c
+
+
 def _draw_asset(asset: RenderAsset, verts: np.ndarray, scr: np.ndarray,
-                out: np.ndarray, covered: np.ndarray, shade: bool) -> None:
+                out: np.ndarray, covered: np.ndarray, zbuf: np.ndarray,
+                shade: bool) -> None:
     canvas = out.shape[0]
     tri_v = verts[asset.tris]
     tri_s = scr[asset.tris]
@@ -257,20 +274,33 @@ def _draw_asset(asset: RenderAsset, verts: np.ndarray, scr: np.ndarray,
         if x1 - x0 < 1 or y1 - y0 < 1:
             continue
 
+        dst_local = (dst - [x0, y0]).astype(np.float32)
         M = cv2.getAffineTransform(asset.src_px[ti].astype(np.float32),
-                                   (dst - [x0, y0]).astype(np.float32))
+                                   dst_local)
         patch = cv2.warpAffine(asset.tex, M, (x1 - x0, y1 - y0),
                                flags=cv2.INTER_LINEAR,
                                borderMode=cv2.BORDER_REPLICATE)
         mask = np.zeros((y1 - y0, x1 - x0), np.uint8)
-        cv2.fillConvexPoly(mask, np.round(dst - [x0, y0]).astype(np.int32), 1)
+        cv2.fillConvexPoly(mask, np.round(dst_local).astype(np.int32), 1)
         mb = mask.astype(bool)
+        if not mb.any():
+            continue
+
+        # Depth test against the shared z-buffer so nearer geometry (e.g. the
+        # face eyelids) correctly occludes farther geometry (the eyeball
+        # sphere). Larger z is nearer to the camera in this convention.
+        zz = _tri_depth(dst_local, tri_v[ti][:, 2], x1 - x0, y1 - y0)
+        zb = zbuf[y0:y1, x0:x1]
+        nearer = mb & (zz > zb)
+        if not nearer.any():
+            continue
 
         lit = 1.0
         if shade:
             lit = 0.64 + 0.36 * max(float(facing[ti]), 0.0)
-        out[y0:y1, x0:x1][mb] = patch[mb] * lit
-        covered[y0:y1, x0:x1] |= mb
+        out[y0:y1, x0:x1][nearer] = patch[nearer] * lit
+        covered[y0:y1, x0:x1][nearer] = True
+        zb[nearer] = zz[nearer]
 
 
 def _render_assets(assets: list[RenderAsset], fg: FgFile, size: int,
@@ -279,11 +309,12 @@ def _render_assets(assets: list[RenderAsset], fg: FgFile, size: int,
     canvas = int(size) * aa
     out = np.full((canvas, canvas, 3), 190.0, np.float32)
     covered = np.zeros((canvas, canvas), bool)
+    zbuf = np.full((canvas, canvas), -np.inf)
     shaped = [_shape_asset(asset, fg) for asset in assets]
     lo, scale = _screen_params(shaped[0], canvas, assets[0].orientation)
     for asset, verts in zip(assets, shaped):
         scr = _project_with_params(verts, canvas, asset.orientation, lo, scale)
-        _draw_asset(asset, verts, scr, out, covered, shade)
+        _draw_asset(asset, verts, scr, out, covered, zbuf, shade)
 
     out[~covered] = 190.0
     out = np.clip(out, 0, 255).astype(np.uint8)
