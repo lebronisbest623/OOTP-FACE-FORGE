@@ -19,12 +19,19 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageTk
 
 from .cli import (
+    BatchCancelled,
     DEFAULT_OUT,
     WORKSPACE_PHOTOS,
-    build_player,
     default_jobs,
     expand_path_batch_items,
     run_batch,
+)
+from .paths import (
+    MissingOOTPAssets,
+    default_ootp_dialog_dir,
+    detect_ootp_3d_path,
+    normalize_ootp_3d_path,
+    save_ootp_3d_path,
 )
 
 
@@ -262,8 +269,8 @@ class FaceForgeApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("OOTP FaceForge")
-        self.geometry("1000x660")
-        self.minsize(940, 600)
+        self.geometry("1000x720")
+        self.minsize(940, 660)
         self.configure(bg="#f5f5f7")
         self.window_icon: ImageTk.PhotoImage | None = None
         self._set_window_icon()
@@ -272,11 +279,13 @@ class FaceForgeApp(tk.Tk):
         self.preview_image: ImageTk.PhotoImage | None = None
         self.last_output: Path | None = None
         self.logs: list[str] = []
+        self.cancel_event = threading.Event()
 
         default_photos = WORKSPACE_PHOTOS / "park_yongtaek"
         self.photos_var = tk.StringVar(value=str(default_photos))
         self.status_var = tk.StringVar(value="Ready")
         self.photo_count_var = tk.StringVar(value="")
+        self.ootp_status_var = tk.StringVar(value="Checking OOTP assets...")
         self.progress_detail_var = tk.StringVar(value="")
         self.preview_status_var = tk.StringVar(value="No completed preview yet")
         self.selected_paths: list[Path] = [default_photos]
@@ -293,6 +302,8 @@ class FaceForgeApp(tk.Tk):
 
         self._configure_style()
         self._build_ui()
+        self.bind("<Escape>", self._cancel_build)
+        self._refresh_ootp_status()
         self._refresh_photo_count()
         self.after(100, self._poll_events)
 
@@ -382,8 +393,34 @@ class FaceForgeApp(tk.Tk):
         )
         self.photo_path.grid(row=3, column=0, sticky="w")
         ttk.Label(controls, textvariable=self.photo_count_var, style="Hint.TLabel").grid(
-            row=4, column=0, sticky="w", pady=(4, 22)
+            row=4, column=0, sticky="w", pady=(4, 14)
         )
+
+        ttk.Label(controls, text="OOTP Assets", style="H2.TLabel").grid(
+            row=5, column=0, sticky="w"
+        )
+        self.ootp_button = tk.Button(
+            controls,
+            text="Choose OOTP Folder",
+            command=self._choose_ootp_folder,
+            bg="#ffffff",
+            fg="#0071e3",
+            activebackground="#f5f5f7",
+            activeforeground="#0071e3",
+            bd=1,
+            relief="solid",
+            highlightthickness=0,
+            font=("Segoe UI", 11, "bold"),
+            padx=18,
+            pady=10,
+        )
+        self.ootp_button.grid(row=6, column=0, sticky="ew", pady=(10, 6))
+        ttk.Label(
+            controls,
+            textvariable=self.ootp_status_var,
+            style="Hint.TLabel",
+            wraplength=300,
+        ).grid(row=7, column=0, sticky="w", pady=(0, 18))
 
         self.build_button = tk.Button(
             controls,
@@ -399,19 +436,19 @@ class FaceForgeApp(tk.Tk):
             padx=18,
             pady=13,
         )
-        self.build_button.grid(row=5, column=0, sticky="ew")
+        self.build_button.grid(row=8, column=0, sticky="ew")
 
         self.progress = ttk.Progressbar(controls, mode="indeterminate")
-        self.progress.grid(row=6, column=0, sticky="ew", pady=(18, 10))
+        self.progress.grid(row=9, column=0, sticky="ew", pady=(18, 10))
         ttk.Label(controls, textvariable=self.status_var, style="Status.TLabel").grid(
-            row=7, column=0, sticky="w"
+            row=10, column=0, sticky="w"
         )
         ttk.Label(
             controls,
             textvariable=self.progress_detail_var,
             style="Hint.TLabel",
             wraplength=300,
-        ).grid(row=8, column=0, sticky="w", pady=(4, 0))
+        ).grid(row=11, column=0, sticky="w", pady=(4, 0))
 
         self.output_button = ttk.Button(
             controls,
@@ -419,7 +456,7 @@ class FaceForgeApp(tk.Tk):
             command=self._open_output,
             state="disabled",
         )
-        self.output_button.grid(row=9, column=0, sticky="ew", pady=(18, 0))
+        self.output_button.grid(row=12, column=0, sticky="ew", pady=(18, 0))
 
         preview_panel = ttk.Frame(body, style="Panel.TFrame", padding=24)
         preview_panel.grid(row=0, column=1, sticky="nsew")
@@ -476,6 +513,44 @@ class FaceForgeApp(tk.Tk):
             self.photo_count_var.set(f"{len(items)} build{'s' if len(items) != 1 else ''} ready")
             return
         self.photo_count_var.set(f"{len(paths)} selection{'s' if len(paths) != 1 else ''} ready")
+
+    def _refresh_ootp_status(self) -> bool:
+        result = detect_ootp_3d_path()
+        if result is None:
+            self.ootp_status_var.set(
+                r"Not found. Choose OOTP data\facegen\3d before building."
+            )
+            return False
+        self.ootp_status_var.set(f"Found via {result.source}: {result.path}")
+        return True
+
+    def _choose_ootp_folder(self) -> bool:
+        path = filedialog.askdirectory(
+            title=r"Choose OOTP data\facegen or data\facegen\3d folder",
+            initialdir=str(default_ootp_dialog_dir()),
+        )
+        if not path:
+            self._refresh_ootp_status()
+            return False
+        try:
+            root = normalize_ootp_3d_path(path)
+            save_ootp_3d_path(root)
+        except MissingOOTPAssets as exc:
+            self.ootp_status_var.set("Invalid OOTP folder")
+            messagebox.showerror("OOTP assets not found", str(exc))
+            return False
+        self.ootp_status_var.set(f"Saved: {root}")
+        return True
+
+    def _ensure_ootp_ready(self) -> bool:
+        if self._refresh_ootp_status():
+            return True
+        messagebox.showinfo(
+            "OOTP assets needed",
+            r"Choose the OOTP Baseball 27 data\facegen\3d folder. "
+            r"It contains face_hi.tri and the eye assets used for preview.",
+        )
+        return self._choose_ootp_folder()
 
     def _append_log(self, text: str) -> None:
         if text:
@@ -552,6 +627,7 @@ class FaceForgeApp(tk.Tk):
                   total: int | None = None,
                   workers: int | None = None) -> None:
         if busy:
+            self.cancel_event.clear()
             self._busy_started_at = time.perf_counter()
             self._current_started_at = self._busy_started_at
             self._progress_done = 0
@@ -565,9 +641,14 @@ class FaceForgeApp(tk.Tk):
             self.status_var.set(label)
             self.progress_detail_var.set("")
             self.output_button.configure(state="disabled")
-            self.build_button.configure(state="disabled")
+            self.build_button.configure(
+                state="normal",
+                text="Cancel",
+                command=self._cancel_build,
+            )
             self.photo_button.configure(state="disabled")
             self.folder_button.configure(state="disabled")
+            self.ootp_button.configure(state="disabled")
             self.progress.stop()
             if total:
                 self.progress.configure(mode="determinate", maximum=total, value=0)
@@ -590,11 +671,28 @@ class FaceForgeApp(tk.Tk):
         self._progress_total = None
         self._progress_workers = None
         self._progress_phase = ""
-        self.build_button.configure(state="normal", text="Build")
+        self.build_button.configure(state="normal", text="Build", command=self._build)
         self.photo_button.configure(state="normal")
         self.folder_button.configure(state="normal")
+        self.ootp_button.configure(state="normal")
+
+    def _cancel_build(self, event: object | None = None) -> str:
+        if self._busy_started_at is None:
+            return ""
+        if not self.cancel_event.is_set():
+            self.cancel_event.set()
+            self.status_var.set("Cancelling...")
+            detail = self.progress_detail_var.get()
+            if "cancelling" not in detail.lower():
+                self.progress_detail_var.set(
+                    f"{detail} • cancelling" if detail else "cancelling"
+                )
+            self.build_button.configure(state="disabled", text="Cancelling...")
+        return "break"
 
     def _build(self) -> None:
+        if not self._ensure_ootp_ready():
+            return
         try:
             items = expand_path_batch_items(self.selected_paths)
         except ValueError as exc:
@@ -610,10 +708,14 @@ class FaceForgeApp(tk.Tk):
             self._progress_current_index = 1
             self._progress_phase = "building"
             self._update_progress_detail()
-            thread = threading.Thread(target=self._build_worker, args=(items[0],), daemon=True)
+            thread = threading.Thread(
+                target=self._build_worker,
+                args=(items[0], self.cancel_event),
+                daemon=True,
+            )
         else:
             jobs = min(default_jobs(), len(items))
-            active_workers = jobs if jobs > 1 and len(items) > 2 else 1
+            active_workers = min(jobs, len(items))
             worker_label = "worker" if active_workers == 1 else "workers"
             self._set_busy(
                 True,
@@ -621,7 +723,11 @@ class FaceForgeApp(tk.Tk):
                 total=len(items),
                 workers=active_workers,
             )
-            thread = threading.Thread(target=self._batch_worker, args=(items,), daemon=True)
+            thread = threading.Thread(
+                target=self._batch_worker,
+                args=(items, self.cancel_event),
+                daemon=True,
+            )
         thread.start()
 
     def _choose_batch_photos(self) -> None:
@@ -694,20 +800,58 @@ class FaceForgeApp(tk.Tk):
         self._apply_default_detail_args(args)
         return args
 
-    def _build_worker(self, item: dict) -> None:
+    def _build_worker(self, item: dict, cancel_event: threading.Event) -> None:
         args = self._namespace_for_item(item)
         stdout = io.StringIO()
         stderr = io.StringIO()
         try:
-            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
-                manifest = build_player(args)
-            self.events.put(("done", (manifest, stdout.getvalue(), stderr.getvalue())))
+            manifest_box: list[dict] = []
+            failure_box: list[tuple[str, str]] = []
+
+            def completed(done: int, total: int, name: str,
+                          err: str | None, manifest: dict | None) -> None:
+                if cancel_event.is_set():
+                    return
+                if err:
+                    failure_box.append((name, err))
+                elif manifest is not None:
+                    manifest_box.append(manifest)
+                self.events.put((
+                    "progress",
+                    {
+                        "done": done,
+                        "total": total,
+                        "failed": len(failure_box),
+                        "current_index": done,
+                        "current": name,
+                        "phase": "skipped" if err else "built",
+                        "workers": 1,
+                    },
+                ))
+
+            run_batch(
+                [args],
+                jobs=1,
+                completed=completed,
+                cancel_event=cancel_event,
+                force_processes=True,
+            )
+            if cancel_event.is_set():
+                self.events.put(("cancelled", (stdout.getvalue(), stderr.getvalue())))
+            elif manifest_box:
+                self.events.put(("done", (manifest_box[-1], stdout.getvalue(), stderr.getvalue())))
+            elif failure_box:
+                self.events.put(("error", (failure_box[0][1], stdout.getvalue(), stderr.getvalue())))
+            else:
+                self.events.put(("error", ("Build did not return a manifest", stdout.getvalue(), stderr.getvalue())))
+        except BatchCancelled:
+            self.events.put(("cancelled", (stdout.getvalue(), stderr.getvalue())))
         except SystemExit as exc:
             self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
         except Exception as exc:
             self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
 
-    def _batch_worker(self, items: list[dict]) -> None:
+    def _batch_worker(self, items: list[dict], cancel_event: threading.Event) -> None:
         stdout = io.StringIO()
         stderr = io.StringIO()
         manifests = []
@@ -726,7 +870,7 @@ class FaceForgeApp(tk.Tk):
                 namespaces.append(self._namespace_for_item(item))
 
             jobs = min(default_jobs(), total)
-            active_workers = jobs if jobs > 1 and total > 2 else 1
+            active_workers = min(jobs, total)
             worker_label = "worker" if active_workers == 1 else "workers"
             self.events.put((
                 "progress",
@@ -748,6 +892,8 @@ class FaceForgeApp(tk.Tk):
             def completed(done: int, total: int, name: str,
                           err: str | None, manifest: dict | None) -> None:
                 nonlocal failed_count
+                if cancel_event.is_set():
+                    return
                 if err:
                     failed_count += 1
                 elif manifest is not None:
@@ -768,11 +914,22 @@ class FaceForgeApp(tk.Tk):
                     },
                 ))
 
-            failures = run_batch(namespaces, jobs=jobs, completed=completed)
-            self.events.put((
-                "batch_done",
-                (manifests, failures, stdout.getvalue(), stderr.getvalue()),
-            ))
+            failures = run_batch(
+                namespaces,
+                jobs=jobs,
+                completed=completed,
+                cancel_event=cancel_event,
+                force_processes=True,
+            )
+            if cancel_event.is_set():
+                self.events.put(("cancelled", (stdout.getvalue(), stderr.getvalue())))
+            else:
+                self.events.put((
+                    "batch_done",
+                    (manifests, failures, stdout.getvalue(), stderr.getvalue()),
+                ))
+        except BatchCancelled:
+            self.events.put(("cancelled", (stdout.getvalue(), stderr.getvalue())))
         except Exception as exc:
             self.events.put(("error", (exc, stdout.getvalue(), stderr.getvalue())))
 
@@ -880,10 +1037,23 @@ class FaceForgeApp(tk.Tk):
                         self._update_progress_detail()
                 elif kind == "status":
                     self.status_var.set(str(payload))
+                elif kind == "cancelled":
+                    stdout, stderr = payload  # type: ignore[misc]
+                    self._append_log(stdout)
+                    self._append_log(stderr)
+                    self.status_var.set("Cancelled")
+                    self.progress_detail_var.set("cancelled")
+                    self._set_busy(False)
                 elif kind == "error":
                     exc, stdout, stderr = payload  # type: ignore[misc]
                     self._append_log(stdout)
                     self._append_log(stderr)
+                    if self.cancel_event.is_set():
+                        self._append_log(str(exc))
+                        self.status_var.set("Cancelled")
+                        self.progress_detail_var.set("cancelled")
+                        self._set_busy(False)
+                        continue
                     self._append_log(str(exc))
                     self.status_var.set("Failed")
                     self._set_busy(False)

@@ -1,11 +1,9 @@
 """Software renderer for .fg files.
 
-Default mode uses OOTP's own face_hi mesh, texture basis, and FIM detail
-mapping. The older FaceGen Modeller SI renderer remains available with
---basis si for debugging the fitting model itself.
+Uses OOTP's own face_hi mesh, texture basis, and FIM detail mapping.
 
 Usage:
-  python -m ootp_faceforge.render file.fg out.png [--basis ootp|si] [--size 512] [--aa 2]
+  python -m ootp_faceforge.render file.fg out.png [--size 512] [--aa 2]
 """
 from __future__ import annotations
 
@@ -20,16 +18,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from .basis import get_basis
 from .fgformat import Egm, Egt, FgFile, TriMesh
-from .texture import uv_px
-
-TSIZE = 1024
-OOTP_3D = Path(
-    r"C:\Program Files (x86)\Steam\steamapps\common"
-    r"\Out of the Park Baseball 27\data\facegen\3d"
-)
-
+from .paths import get_ootp_3d_path
 
 @dataclass
 class RenderAsset:
@@ -117,17 +107,19 @@ def _triangulate_facets(mesh: TriMesh, tex_width: int,
 
 
 @lru_cache(maxsize=8)
-def _load_ootp_source_asset(stem: str,
+def _load_ootp_source_asset(root_path: str,
+                            stem: str,
                             texture_name: str) -> RenderSourceAsset:
-    mesh = TriMesh.read(str(OOTP_3D / f"{stem}.tri"))
-    egm = Egm.read(str(OOTP_3D / f"{stem}.egm"))
-    egt = Egt.read(str(OOTP_3D / f"{stem}.egt"))
-    base = np.asarray(Image.open(OOTP_3D / texture_name).convert("RGB"),
+    root = Path(root_path)
+    mesh = TriMesh.read(str(root / f"{stem}.tri"))
+    egm = Egm.read(str(root / f"{stem}.egm"))
+    egt = Egt.read(str(root / f"{stem}.egt"))
+    base = np.asarray(Image.open(root / texture_name).convert("RGB"),
                       np.float32)
     h, w = base.shape[:2]
     tris, src_px = _triangulate_facets(mesh, w, h)
     modes = np.concatenate([egm.sym, egm.asym], 0)
-    fim_path = OOTP_3D / f"{stem}.fim"
+    fim_path = root / f"{stem}.fim"
     fim = _read_fim(fim_path) if fim_path.exists() else None
     return RenderSourceAsset(
         f"ootp-{stem}",
@@ -146,7 +138,8 @@ def _build_ootp_asset(fg: FgFile, stem: str = "face_hi",
                       apply_detail: bool = True,
                       texture_name: str | None = None) -> RenderAsset:
     texture_name = texture_name or f"{stem}.png"
-    source = _load_ootp_source_asset(stem, texture_name)
+    root = get_ootp_3d_path()
+    source = _load_ootp_source_asset(str(root), stem, texture_name)
     h, w = source.base_tex.shape[:2]
     coeff_tex = np.einsum("m,mrcd->rcd", fg.sym_tex.astype(np.float32),
                           source.tex_modes)
@@ -179,34 +172,9 @@ def _build_ootp_assets(fg: FgFile, include_eyes: bool) -> list[RenderAsset]:
     return assets
 
 
-def _build_si_asset(fg: FgFile) -> RenderAsset:
-    basis = get_basis()
-    tex = _compose_si_texture(basis, fg)
-    return RenderAsset(
-        "facegen-si",
-        basis.verts,
-        basis.modes,
-        basis.tris,
-        uv_px(basis, TSIZE)[basis.tris].astype(np.float32),
-        tex.astype(np.float32),
-        "si",
-    )
-
-
-def _compose_si_texture(basis: Basis, fg: FgFile) -> np.ndarray:
-    stat = basis.stat_texture(fg.sym_tex)
-    stat = cv2.resize(stat, (TSIZE, TSIZE), interpolation=cv2.INTER_LINEAR)
-    mod = _detail_modulation(basis.fim, fg, TSIZE, TSIZE)
-    return np.clip(stat * mod, 0, 255)
-
-
 def _screen_plane(verts: np.ndarray, orientation: str) -> np.ndarray:
-    if orientation == "ootp":
-        # OOTP face_hi uses a different in-plane convention than the SI demo
-        # mesh: mesh +x is vertical in the front view and +y points left.
-        return np.stack([verts[:, 0], -verts[:, 1]], 1)
-    # FaceGen SI demo convention used by the fitting code.
-    return np.stack([verts[:, 1], verts[:, 0]], 1)
+    # OOTP face_hi: mesh +x is vertical in the front view and +y points left.
+    return np.stack([verts[:, 0], -verts[:, 1]], 1)
 
 
 def _screen_params(verts: np.ndarray, size: int,
@@ -323,12 +291,9 @@ def _render_assets(assets: list[RenderAsset], fg: FgFile, size: int,
     return out
 
 
-def render(fg: FgFile, basis_name: str = "ootp", size: int = 512,
-           shade: bool = True, aa: int = 2,
+def render(fg: FgFile, size: int = 512, shade: bool = True, aa: int = 2,
            include_eyes: bool = True) -> tuple[np.ndarray, str]:
-    assets = (_build_ootp_assets(fg, include_eyes)
-              if basis_name == "ootp"
-              else [_build_si_asset(fg)])
+    assets = _build_ootp_assets(fg, include_eyes)
     return _render_assets(assets, fg, size=size, shade=shade, aa=aa), "+".join(
         asset.name for asset in assets
     )
@@ -338,11 +303,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Render an OOTP/FaceGen .fg preview.")
     p.add_argument("fg")
     p.add_argument("out")
-    p.add_argument("--basis", choices=("ootp", "si"), default="ootp")
     p.add_argument("--size", type=int, default=512)
     p.add_argument("--aa", type=int, default=2)
     p.add_argument("--no-eyes", action="store_true",
-                   help="Only affects --basis ootp.")
+                   help="Render only the face mesh, without OOTP eye assets.")
     p.add_argument("--shade", action="store_true",
                    help="Compatibility flag; shading is on unless --flat is used.")
     p.add_argument("--flat", action="store_true")
@@ -354,7 +318,6 @@ def main(argv: list[str] | None = None) -> None:
     fg = FgFile.read(args.fg)
     img, asset_name = render(
         fg,
-        basis_name=args.basis,
         size=args.size,
         shade=not args.flat,
         aa=args.aa,

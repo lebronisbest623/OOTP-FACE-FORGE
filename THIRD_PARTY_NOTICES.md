@@ -31,12 +31,11 @@ Reference documentation:
 - https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf
 - https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Blendshape%20V2.pdf
 
-## OOTP and FaceGen Assets
+## OOTP Assets
 
-This repository does not include OOTP game assets, FaceGen Modeller assets, or
-FaceGen SDK assets. Users must provide their own licensed local installations.
-The code reads those local assets at runtime to build compatible `.fg` files
-and preview renders.
+This repository does not include OOTP game assets. Users must provide their own
+licensed local OOTP installation. The default pipeline reads those local OOTP
+assets at runtime to build compatible `.fg` files and preview renders.
 
 Do not commit player photos, generated `.fg` files, OOTP asset files, FaceGen
 model files such as `.tri`, `.egm`, `.egt`, `.fim`, or generated preview images

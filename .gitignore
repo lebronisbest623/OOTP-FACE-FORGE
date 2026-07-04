@@ -16,6 +16,8 @@ FaceForgeWorkspace/
 photos_in/*
 !photos_in/.gitkeep
 backup/
+install_backups/
+install_logs/
 src/ootp_faceforge/__pycache__/
 src/ootp_faceforge/dense_corr.npz
 *.log

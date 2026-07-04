@@ -1,7 +1,7 @@
 """Round-trip evaluation of the shape-fitting pipeline.
 
-Renders faces with KNOWN FaceGen coefficients using the SI basis renderer,
-runs landmark detection + shape fitting on those renders, and measures how
+Renders faces with KNOWN OOTP FaceGen coefficients, runs landmark detection +
+shape fitting on those renders, and measures how
 much of the true identity the fit recovers.
 
 Cases:
@@ -41,7 +41,7 @@ def render_coeffs(basis, c: np.ndarray, size: int) -> np.ndarray:
         asym_tex=np.zeros(0),
         detail_jpeg=None,
     )
-    img, _ = render(fg, basis_name="si", size=size, shade=True, aa=2)
+    img, _ = render(fg, size=size, shade=True, aa=2)
     return img
 
 

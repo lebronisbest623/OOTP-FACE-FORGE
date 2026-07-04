@@ -12,22 +12,26 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
+
+from .paths import workspace_root
 
 
 ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = ROOT.parent.parent
-WORKSPACE_ROOT = Path(
-    os.environ.get("OOTP_FACEFORGE_WORKSPACE")
-    or (PROJECT_ROOT.parent / "FaceForgeWorkspace")
-).expanduser()
+WORKSPACE_ROOT = workspace_root()
 WORKSPACE_PHOTOS = WORKSPACE_ROOT / "photos"
 WORKSPACE_EXPORTS = WORKSPACE_ROOT / "exports"
 WORKSPACE_DEBUG = WORKSPACE_ROOT / "debug"
 WORKSPACE_MODELS = WORKSPACE_ROOT / "models"
 DEFAULT_OUT = WORKSPACE_ROOT / "runs"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+class BatchCancelled(RuntimeError):
+    """Raised when a GUI/user cancellation stops a batch build."""
 
 PROFILES: dict[str, list[str]] = {
     "identity": [],
@@ -371,8 +375,6 @@ def render_only(args: argparse.Namespace) -> None:
         "ootp_faceforge.render",
         str(Path(args.fg)),
         str(Path(args.out)),
-        "--basis",
-        args.basis,
         "--size",
         str(args.size),
         "--aa",
@@ -417,6 +419,28 @@ def _batch_build_one(
         return name, f"{type(exc).__name__}: {exc}", None
 
 
+def _cancel_requested(cancel_event) -> bool:
+    return bool(cancel_event is not None and cancel_event.is_set())
+
+
+def _terminate_process_pool(executor) -> None:
+    processes = getattr(executor, "_processes", None) or {}
+    for proc in list(processes.values()):
+        if proc is not None and proc.is_alive():
+            with contextlib.suppress(Exception):
+                proc.terminate()
+    deadline = time.monotonic() + 2.0
+    for proc in list(processes.values()):
+        if proc is None:
+            continue
+        remaining = max(0.0, deadline - time.monotonic())
+        with contextlib.suppress(Exception):
+            proc.join(remaining)
+        if proc.is_alive():
+            with contextlib.suppress(Exception):
+                proc.kill()
+
+
 def batch_namespaces(args: argparse.Namespace,
                      items: list[dict[str, Any]]) -> list[argparse.Namespace]:
     out: list[argparse.Namespace] = []
@@ -435,7 +459,8 @@ def batch_namespaces(args: argparse.Namespace,
 
 
 def run_batch(namespaces: list[argparse.Namespace], jobs: int | None = None,
-              progress=None, completed=None) -> list[tuple[str, str]]:
+              progress=None, completed=None, cancel_event=None,
+              force_processes: bool = False) -> list[tuple[str, str]]:
     """Build many players, in parallel processes when it pays off.
 
     progress(done, total, name, error|None) is called as each finishes.
@@ -456,8 +481,10 @@ def run_batch(namespaces: list[argparse.Namespace], jobs: int | None = None,
 
     # Worker spawn re-imports the package + heavy deps (mediapipe/cv2), so
     # small batches are faster sequentially.
-    if jobs <= 1 or total <= 2:
+    if not force_processes and (jobs <= 1 or total <= 2):
         for i, ns in enumerate(namespaces, 1):
+            if _cancel_requested(cancel_event):
+                raise BatchCancelled("cancelled")
             name, err, manifest = _batch_build_one(ns)
             report(i, name, err, manifest)
         return failures
@@ -468,15 +495,41 @@ def run_batch(namespaces: list[argparse.Namespace], jobs: int | None = None,
     existing = os.environ.get("PYTHONPATH")
     os.environ["PYTHONPATH"] = src if not existing else src + os.pathsep + existing
 
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     done = 0
-    with ProcessPoolExecutor(max_workers=min(jobs, total)) as ex:
-        futures = [ex.submit(_batch_build_one, ns) for ns in namespaces]
-        for fut in as_completed(futures):
-            name, err, manifest = fut.result()
-            done += 1
-            report(done, name, err, manifest)
+    executor = ProcessPoolExecutor(max_workers=min(max(jobs, 1), total))
+    futures = set()
+    did_shutdown = False
+    try:
+        for ns in namespaces:
+            if _cancel_requested(cancel_event):
+                raise BatchCancelled("cancelled")
+            futures.add(executor.submit(_batch_build_one, ns))
+        while futures:
+            if _cancel_requested(cancel_event):
+                raise BatchCancelled("cancelled")
+            finished, futures = wait(
+                futures,
+                timeout=0.2,
+                return_when=FIRST_COMPLETED,
+            )
+            if not finished:
+                continue
+            for fut in finished:
+                name, err, manifest = fut.result()
+                done += 1
+                report(done, name, err, manifest)
+    except BatchCancelled:
+        for fut in futures:
+            fut.cancel()
+        _terminate_process_pool(executor)
+        executor.shutdown(wait=False, cancel_futures=True)
+        did_shutdown = True
+        raise
+    finally:
+        if not did_shutdown:
+            executor.shutdown(wait=True, cancel_futures=True)
     return failures
 
 
@@ -565,7 +618,6 @@ def parse_args() -> argparse.Namespace:
     render = sub.add_parser("render", help="Render an existing .fg preview.")
     render.add_argument("fg")
     render.add_argument("out")
-    render.add_argument("--basis", choices=("ootp", "si"), default="ootp")
     render.add_argument("--size", type=int, default=512)
     render.add_argument("--aa", type=int, default=2)
     render.add_argument("--no-eyes", action="store_true")

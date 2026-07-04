@@ -414,7 +414,7 @@ def main(argv: list[str] | None = None) -> None:
 
     fimv = basis.fim[..., 0] >= 0
     ref_lum = float((basis.mean_tex[fimv] @ np.array([0.299, 0.587, 0.114])).mean())
-    anchor = basis.tri.surface_points["NOSE_TIP"][0]
+    anchor = basis.front_anchor_tri
 
     print("texture mode:", args.texture_mode)
     tex_weights = texture_weights(metrics, tex_idx, args.texture_photo)

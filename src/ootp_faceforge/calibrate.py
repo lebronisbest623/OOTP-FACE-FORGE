@@ -24,9 +24,16 @@ import numpy as np
 
 from .basis import Basis, get_basis
 from .fgformat import FgFile
+from .paths import workspace_root
 
-DENSE_CORR = Path(__file__).with_name("dense_corr.npz")
-CORR_VERSION = 2  # bump to invalidate cached tables built by older code
+WORKSPACE_ROOT = workspace_root()
+CACHE_ROOT = WORKSPACE_ROOT / "cache"
+DENSE_CORR = CACHE_ROOT / "dense_corr_ootp.npz"
+CORR_VERSION = 3  # bump to invalidate cached tables built by older code
+
+
+def dense_corr_path(basis: Basis) -> Path:
+    return CACHE_ROOT / f"dense_corr_{basis.source}_v{CORR_VERSION}.npz"
 
 
 def mean_face_screen(basis: Basis, size: int, aa: int = 2) -> np.ndarray:
@@ -35,8 +42,11 @@ def mean_face_screen(basis: Basis, size: int, aa: int = 2) -> np.ndarray:
     from .render import _project_with_params, _screen_params
 
     canvas = size * aa
-    lo, scale = _screen_params(basis.verts, canvas, "si")
-    return _project_with_params(basis.verts, canvas, "si", lo, scale) / aa
+    lo, scale = _screen_params(basis.verts, canvas, basis.orientation)
+    return (
+        _project_with_params(basis.verts, canvas, basis.orientation, lo, scale)
+        / aa
+    )
 
 
 def match_landmarks(proj2d: np.ndarray, tris: np.ndarray, fronts: np.ndarray,
@@ -93,7 +103,8 @@ def build_dense_corr(basis: Basis | None = None, size: int = 1024,
     from .texture import front_tris
 
     basis = basis or get_basis()
-    out_path = out_path or DENSE_CORR
+    out_path = out_path or dense_corr_path(basis)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     fg = FgFile(
         sym_shape=np.zeros(basis.n_sym),
         asym_shape=np.zeros(basis.n_asym),
@@ -101,10 +112,10 @@ def build_dense_corr(basis: Basis | None = None, size: int = 1024,
         asym_tex=np.zeros(0),
         detail_jpeg=None,
     )
-    img, _ = render(fg, basis_name="si", size=size, shade=True, aa=2)
+    img, _ = render(fg, size=size, shade=True, aa=2)
     lms = detect(img)
     scr = mean_face_screen(basis, size, aa=2)
-    anchor = basis.tri.surface_points["NOSE_TIP"][0]
+    anchor = basis.front_anchor_tri
     fronts = front_tris(basis, scr, anchor)
     pairs = match_landmarks(scr, basis.tris, fronts, lms)
 
@@ -117,6 +128,7 @@ def build_dense_corr(basis: Basis | None = None, size: int = 1024,
     resid = np.linalg.norm(table_px - lms[lm], axis=1)
     np.savez(out_path, lm=lm, tri=tri, bary=bary,
              version=np.int32(CORR_VERSION), size=np.int32(size),
+             source=np.asarray(basis.source),
              calib_resid=resid.astype(np.float32))
     return {"n": len(lm), "max_resid_px": float(resid.max()),
             "mean_resid_px": float(resid.mean()), "path": str(out_path)}
@@ -125,9 +137,14 @@ def build_dense_corr(basis: Basis | None = None, size: int = 1024,
 def calibrated_pairs(basis: Basis | None = None):
     """Load (or build on first use) the calibrated correspondence table.
     Returns (lm_idx, tri_idx, bary) triples."""
-    if DENSE_CORR.exists():
-        d = np.load(DENSE_CORR)
-        if int(d.get("version", np.int32(0))) == CORR_VERSION:
+    basis = basis or get_basis()
+    path = dense_corr_path(basis)
+    if path.exists():
+        d = np.load(path)
+        if (
+            int(d.get("version", np.int32(0))) == CORR_VERSION
+            and str(d.get("source", "")) == basis.source
+        ):
             return list(zip(d["lm"], d["tri"], d["bary"]))
     info = build_dense_corr(basis)
     d = np.load(info["path"])

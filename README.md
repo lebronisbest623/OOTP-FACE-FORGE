@@ -27,19 +27,15 @@ This repository intentionally does not include:
 - Player photos.
 - Generated `.fg` files or preview renders.
 - OOTP game assets.
-- FaceGen Modeller or FaceGen SDK assets.
-- FaceGen `.tri`, `.egm`, `.egt`, or `.fim` model files.
 
-Users must provide their own licensed local OOTP and FaceGen installations.
+Users must provide their own licensed local OOTP installation.
 
 ## Requirements
 
 - Windows.
 - Python 3.11+.
-- OOTP 27 installed in the default Steam path, with FaceGen assets under:
-  `C:\Program Files (x86)\Steam\steamapps\common\Out of the Park Baseball 27\data\facegen`
-- FaceGen Modeller Demo 3 installed with statistical model data under:
-  `C:\Program Files\FaceGen\Modeller Demo 3\data\photofit`
+- OOTP 27 installed locally. FaceForge reads FaceGen assets from the user's
+  installation at runtime.
 - The bundled MediaPipe Face Landmarker model:
   `src\ootp_faceforge\face_landmarker.task`
 
@@ -69,6 +65,31 @@ Or, without installing the package:
 ```powershell
 python ootp_facegen.py gui
 ```
+
+## OOTP Asset Path
+
+The app checks these locations in order:
+
+- `OOTP_FACEFORGE_OOTP_3D`, if set.
+- The saved GUI setting in `%USERPROFILE%\FaceForgeWorkspace\config.json`.
+- Steam library folders, including the default Steam install path.
+- Common non-Steam Program Files install folders.
+
+If the app cannot find OOTP automatically, click **Choose OOTP Folder** in the
+GUI and select either:
+
+```text
+...\Out of the Park Baseball 27\data\facegen
+```
+
+or the inner `3d` folder:
+
+```text
+...\Out of the Park Baseball 27\data\facegen\3d
+```
+
+The selected path is remembered for future GUI, CLI, and batch runs. Advanced
+users can also set `OOTP_FACEFORGE_OOTP_3D` directly to the `3d` folder.
 
 Put several photos for one player in the workspace photos folder:
 
@@ -185,7 +206,7 @@ src/ootp_faceforge/
   gui.py              # Tkinter desktop app
   pipeline.py         # photo folder -> .fg
   render.py           # .fg -> OOTP-style preview PNG
-  basis.py            # FaceGen basis loading from local Modeller data
+  basis.py            # OOTP face_hi basis loading for fitting
   fgformat.py         # .fg/.tri/.egm/.egt readers and writers
   fit.py              # shape fitting
   landmarks.py        # MediaPipe landmark detection and scoring helpers
@@ -203,10 +224,10 @@ The bundled MediaPipe Face Landmarker model is covered separately under
 Apache License 2.0. See `THIRD_PARTY_NOTICES.md` and
 `LICENSES/Apache-2.0.txt`.
 
-OOTP FaceForge reads OOTP and FaceGen assets from the user's local installation
-at runtime. Those assets are not redistributed here. Do not publish player
-photos, generated face packs, or third-party game/model assets unless you have
-the rights to do so.
+OOTP FaceForge reads OOTP assets from the user's local installation at runtime.
+Those assets are not redistributed here. Do not publish player photos,
+generated face packs, or third-party game/model assets unless you have the
+rights to do so.
 
 ## Roadmap
 
@@ -215,4 +236,3 @@ the rights to do so.
 - Add a QA score for mouth artifacts, cap shadows, skin-tone drift, and landmark
   confidence.
 - Add export helpers for OOTP saved-game facegen folders.
-- Replace hard-coded local asset paths with a settings file.

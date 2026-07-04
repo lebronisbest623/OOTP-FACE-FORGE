@@ -295,6 +295,8 @@ def _surface_point_detail_px(basis: Basis, name: str, size: int) -> np.ndarray:
 def _neutralize_eyes(basis: Basis, D: np.ndarray, size: int,
                      core: float = 0.75) -> np.ndarray:
     """Blend D toward identity inside each eye opening (feathered ellipse)."""
+    if not basis.tri.surface_points:
+        return D
     yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
     for side in ("LEFT", "RIGHT"):
         c = _surface_point_detail_px(basis, f"EYE_{side}_CENTRE", size)
