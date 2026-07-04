@@ -55,6 +55,16 @@ def _running_as_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def _result_folder(manifest: dict) -> Path:
+    return Path(manifest["outputs"]["fg"]).parents[1]
+
+
+def _batch_output_folder(manifests: list[dict]) -> Path:
+    if not manifests:
+        return DEFAULT_OUT
+    return Path(manifests[-1]["outputs"]["fg"]).parents[2]
+
+
 class _GUID(ctypes.Structure):
     _fields_ = [
         ("Data1", wintypes.DWORD),
@@ -293,6 +303,9 @@ class FaceForgeApp(tk.Tk):
         self.ootp_status_var = tk.StringVar(value="Checking OOTP assets...")
         self.progress_detail_var = tk.StringVar(value="")
         self.preview_status_var = tk.StringVar(value="No completed preview yet")
+        self.output_location_var = tk.StringVar(
+            value=f"Results save to: {DEFAULT_OUT}"
+        )
         self.selected_paths: list[Path] = [default_photos]
         self._busy_started_at: float | None = None
         self._current_started_at: float | None = None
@@ -457,11 +470,17 @@ class FaceForgeApp(tk.Tk):
 
         self.output_button = ttk.Button(
             controls,
-            text="Open Result",
+            text="Open Saved Folder",
             command=self._open_output,
             state="disabled",
         )
         self.output_button.grid(row=12, column=0, sticky="ew", pady=(18, 0))
+        ttk.Label(
+            controls,
+            textvariable=self.output_location_var,
+            style="Hint.TLabel",
+            wraplength=300,
+        ).grid(row=13, column=0, sticky="w", pady=(8, 0))
 
         preview_panel = ttk.Frame(body, style="Panel.TFrame", padding=24)
         preview_panel.grid(row=0, column=1, sticky="nsew")
@@ -645,6 +664,7 @@ class FaceForgeApp(tk.Tk):
             self._last_progress_second = -1
             self.status_var.set(label)
             self.progress_detail_var.set("")
+            self.output_location_var.set(f"Results save to: {DEFAULT_OUT}")
             self.output_button.configure(state="disabled")
             self.build_button.configure(
                 state="normal",
@@ -961,15 +981,18 @@ class FaceForgeApp(tk.Tk):
                         Path(manifest["outputs"]["preview"]),
                         f"Built: {manifest['player']['name']}",
                     )
-                    self.last_output = Path(manifest["outputs"]["preview"]).parents[1]
-                    self.status_var.set("Complete")
+                    self.last_output = _result_folder(manifest)
+                    fg_path = Path(manifest["outputs"]["fg"])
+                    self.status_var.set(f"Saved: {fg_path.name}")
+                    self.output_location_var.set(f"Saved to: {self.last_output}")
                     self._set_busy(False)
                     self.output_button.configure(state="normal")
                 elif kind == "preview":
                     manifest = payload  # type: ignore[assignment]
                     preview_path = Path(manifest["outputs"]["preview"])
                     self._show_preview(preview_path, f"Built: {manifest['player']['name']}")
-                    self.last_output = Path(manifest["outputs"]["fg"]).parents[2]
+                    self.last_output = _batch_output_folder([manifest])
+                    self.output_location_var.set(f"Saved to: {_result_folder(manifest)}")
                     self.output_button.configure(state="normal")
                 elif kind == "batch_done":
                     manifests, failures, stdout, stderr = payload  # type: ignore[misc]
@@ -981,7 +1004,8 @@ class FaceForgeApp(tk.Tk):
                             last_preview,
                             f"Last built: {manifests[-1]['player']['name']}",
                         )
-                        self.last_output = Path(manifests[-1]["outputs"]["fg"]).parents[2]
+                        self.last_output = _batch_output_folder(manifests)
+                        self.output_location_var.set(f"Saved to: {self.last_output}")
                         self.output_button.configure(state="normal")
                     skipped = len(failures)
                     self.status_var.set(

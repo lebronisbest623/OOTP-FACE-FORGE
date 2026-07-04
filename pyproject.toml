@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ootp-faceforge"
-version = "0.2.3"
+version = "0.2.4"
 description = "Build OOTP-compatible FaceGen files from player photo folders."
 readme = "README.md"
 requires-python = ">=3.11"
