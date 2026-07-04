@@ -51,8 +51,10 @@ for n in ("JAW_OUTER_LEFT", "JAW_OUTER_RIGHT", "CHEEKBONE_LEFT", "CHEEKBONE_RIGH
     WEIGHT[n] = 0.25
 
 
-MODEL = str(Path(__file__).with_name("face_landmarker.task"))
+MODEL_PATH = Path(__file__).with_name("face_landmarker.task")
+MODEL = str(MODEL_PATH)
 _LANDMARKER = None
+_MODEL_BYTES: bytes | None = None
 
 # mediapipe FACE_OVAL landmark loop (standard ordering)
 FACE_OVAL = [10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397,
@@ -177,6 +179,13 @@ def close_landmarker() -> None:
         _LANDMARKER = None
 
 
+def _model_asset_buffer() -> bytes:
+    global _MODEL_BYTES
+    if _MODEL_BYTES is None:
+        _MODEL_BYTES = MODEL_PATH.read_bytes()
+    return _MODEL_BYTES
+
+
 def _get_landmarker():
     global _LANDMARKER
     if _LANDMARKER is not None:
@@ -186,7 +195,7 @@ def _get_landmarker():
     from mediapipe.tasks.python import vision
 
     opts = vision.FaceLandmarkerOptions(
-        base_options=mp_python.BaseOptions(model_asset_path=MODEL),
+        base_options=mp_python.BaseOptions(model_asset_buffer=_model_asset_buffer()),
         running_mode=vision.RunningMode.IMAGE,
         num_faces=1,
         min_face_detection_confidence=0.3,
