@@ -396,6 +396,19 @@ def default_jobs() -> int:
     return max(1, min(n - 1, 12))
 
 
+def _batch_failure_message(exc: BaseException, output: str) -> str:
+    message = str(exc) or type(exc).__name__
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    if not lines:
+        return message
+    detail = "\n".join(lines[-12:])
+    if len(detail) > 1800:
+        detail = "..." + detail[-1797:]
+    if message in detail:
+        return detail
+    return f"{message}\n\nDetails:\n{detail}"
+
+
 def _ensure_worker_path() -> None:
     src = str(PROJECT_ROOT / "src")
     if src not in sys.path:
@@ -414,9 +427,9 @@ def _batch_build_one(
             manifest = build_player(ns)
         return name, None, manifest
     except SystemExit as exc:
-        return name, str(exc), None
+        return name, _batch_failure_message(exc, buf.getvalue()), None
     except Exception as exc:  # noqa: BLE001 - report, do not abort the batch
-        return name, f"{type(exc).__name__}: {exc}", None
+        return name, _batch_failure_message(exc, buf.getvalue()), None
 
 
 def _cancel_requested(cancel_event) -> bool:

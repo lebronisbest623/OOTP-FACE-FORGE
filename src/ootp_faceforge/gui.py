@@ -7,6 +7,7 @@ import io
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -48,6 +49,10 @@ _FOS_FORCEFILESYSTEM = 0x40
 _FOS_ALLOWMULTISELECT = 0x200
 _FOS_PATHMUSTEXIST = 0x800
 _SIGDN_FILESYSPATH = 0x80058000
+
+
+def _running_as_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
 
 
 class _GUID(ctypes.Structure):
@@ -834,7 +839,7 @@ class FaceForgeApp(tk.Tk):
                 jobs=1,
                 completed=completed,
                 cancel_event=cancel_event,
-                force_processes=True,
+                force_processes=not _running_as_frozen(),
             )
             if cancel_event.is_set():
                 self.events.put(("cancelled", (stdout.getvalue(), stderr.getvalue())))
@@ -869,7 +874,7 @@ class FaceForgeApp(tk.Tk):
                     raise ValueError(f"batch item {idx} missing photos")
                 namespaces.append(self._namespace_for_item(item))
 
-            jobs = min(default_jobs(), total)
+            jobs = 1 if _running_as_frozen() else min(default_jobs(), total)
             active_workers = min(jobs, total)
             worker_label = "worker" if active_workers == 1 else "workers"
             self.events.put((
@@ -919,7 +924,7 @@ class FaceForgeApp(tk.Tk):
                 jobs=jobs,
                 completed=completed,
                 cancel_event=cancel_event,
-                force_processes=True,
+                force_processes=not _running_as_frozen(),
             )
             if cancel_event.is_set():
                 self.events.put(("cancelled", (stdout.getvalue(), stderr.getvalue())))

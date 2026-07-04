@@ -52,6 +52,8 @@ $tmpIconScript = Join-Path $buildRoot "make_icon.py"
 Set-Content -Path $tmpIconScript -Value $iconScript -Encoding UTF8
 python $tmpIconScript
 
+$env:MPLBACKEND = "Agg"
+
 python -m PyInstaller `
   --noconfirm `
   --clean `
@@ -85,7 +87,6 @@ python -m PyInstaller `
   --exclude-module "PySide6" `
   --exclude-module "IPython" `
   --exclude-module "pytest" `
-  --exclude-module "matplotlib" `
   --exclude-module "pygame" `
   --exclude-module "scipy" `
   --exclude-module "sounddevice" `

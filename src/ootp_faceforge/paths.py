@@ -174,6 +174,34 @@ def _candidate_shapes(path: Path) -> Iterable[Path]:
     yield path / "3d"
     yield path / "facegen" / "3d"
     yield path / "data" / "facegen" / "3d"
+    if path.name.lower() == "fg_files":
+        yield path.parent / "facegen" / "3d"
+    for common in _manual_steam_common_dirs(path):
+        yield common / "Out of the Park Baseball 27" / "data" / "facegen" / "3d"
+        if common.exists():
+            for game_dir in sorted(common.glob("Out of the Park Baseball*"), reverse=True):
+                yield game_dir / "data" / "facegen" / "3d"
+    for game_dir in _manual_game_dirs(path):
+        yield game_dir / "data" / "facegen" / "3d"
+
+
+def _manual_steam_common_dirs(path: Path) -> Iterable[Path]:
+    name = path.name.lower()
+    if name == "common" and path.parent.name.lower() == "steamapps":
+        yield path
+    if name == "steamapps":
+        yield path / "common"
+    if name == "steam":
+        yield path / "steamapps" / "common"
+    yield path / "Steam" / "steamapps" / "common"
+
+
+def _manual_game_dirs(path: Path) -> Iterable[Path]:
+    if path.exists():
+        yield from sorted(path.glob("Out of the Park Baseball*"), reverse=True)
+    yield path / "Out of the Park Developments" / "OOTP Baseball 27"
+    yield path / "Out of the Park Baseball 27"
+    yield path / "OOTP Baseball 27"
 
 
 def _program_files_dirs() -> Iterable[Path]:
@@ -244,6 +272,12 @@ def _missing_ootp_message(path: Path | None, tried: tuple[Path, ...]) -> str:
     ]
     if path is not None:
         lines.insert(1, f"Selected folder: {path}")
+        if path.name.lower() == "fg_files":
+            lines.insert(
+                2,
+                r"That looks like fg_files, which stores player .fg files. "
+                r"Choose the sibling data\facegen\3d asset folder instead.",
+            )
     if tried:
         lines.append("Checked:")
         for candidate in tried[:8]:
