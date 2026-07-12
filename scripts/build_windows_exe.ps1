@@ -54,7 +54,21 @@ python $tmpIconScript
 
 $env:MPLBACKEND = "Agg"
 
+# Bundle the optional BiSeNet glasses parser when it is present so the built
+# app can add eyeglasses out of the box. Absent -> glasses stay side-loadable
+# from %USERPROFILE%\FaceForgeWorkspace\models (see paths.model_search_dirs).
+$glassesModel = Join-Path $repoRoot "models\bisenet_resnet_34.onnx"
+$extraData = @()
+if (Test-Path $glassesModel) {
+  $extraData += "--add-data"
+  $extraData += "$glassesModel;models"
+  Write-Host "Bundling glasses model: $glassesModel"
+} else {
+  Write-Host "Glasses model not found at $glassesModel; it will be side-loadable from workspace\models"
+}
+
 python -m PyInstaller `
+  @extraData `
   --noconfirm `
   --clean `
   --windowed `
@@ -67,14 +81,23 @@ python -m PyInstaller `
   --add-data "$(Join-Path $repoRoot 'src\ootp_faceforge\face_landmarker.task');ootp_faceforge" `
   --add-data "$(Join-Path $repoRoot 'src\ootp_faceforge\assets\icon.svg');ootp_faceforge\assets" `
   --add-data "$(Join-Path $repoRoot 'src\ootp_faceforge\assets\icon.ico');ootp_faceforge\assets" `
+  --add-data "$(Join-Path $repoRoot 'src\ootp_faceforge\assets\glasses_templates.json');ootp_faceforge\assets" `
   --collect-data "mediapipe" `
   --collect-binaries "mediapipe" `
   --hidden-import "ootp_faceforge.pipeline" `
   --hidden-import "ootp_faceforge.render" `
   --hidden-import "ootp_faceforge.calibrate" `
   --hidden-import "ootp_faceforge.emb2shape" `
+  --hidden-import "ootp_faceforge.glasses" `
+  --hidden-import "ootp_faceforge.glasses_mesh" `
   --hidden-import "ootp_faceforge.identity" `
+  --hidden-import "ootp_faceforge.modeller_fit" `
+  --hidden-import "ootp_faceforge.photofit" `
+  --hidden-import "ootp_faceforge.render_retrieval" `
+  --hidden-import "ootp_faceforge.retrieval" `
   --hidden-import "ootp_faceforge.restore" `
+  --hidden-import "onnxruntime" `
+  --collect-binaries "onnxruntime" `
   --hidden-import "mediapipe" `
   --hidden-import "mediapipe.tasks" `
   --hidden-import "mediapipe.tasks.python" `

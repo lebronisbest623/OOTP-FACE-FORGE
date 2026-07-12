@@ -31,6 +31,17 @@ Reference documentation:
 - https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Face%20Mesh%20V2.pdf
 - https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Blendshape%20V2.pdf
 
+## Optional Models in Windows Release Builds
+
+The source repository does not bundle restoration/identity/parsing models; use
+`scripts/download_restore_model.py` to fetch them locally. Prebuilt Windows
+release packages may include `bisenet_resnet_34.onnx`, a BiSeNet ResNet-34 face
+parser used to detect eyeglasses. The ONNX conversion is redistributed by the
+facefusion project (https://huggingface.co/facefusion/models-3.0.0); the
+underlying face-parsing model derives from CelebAMask-HQ training data, which
+is provided for non-commercial research use. GFPGAN and ArcFace models are
+never bundled and must be downloaded by the user.
+
 ## OOTP Assets
 
 This repository does not include OOTP game assets. Users must provide their own

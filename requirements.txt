@@ -1,4 +1,5 @@
 mediapipe
 numpy
 opencv-python
+onnxruntime
 Pillow

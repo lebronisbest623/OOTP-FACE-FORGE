@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -11,6 +12,7 @@ from typing import Any, Iterable
 
 ENV_WORKSPACE = "OOTP_FACEFORGE_WORKSPACE"
 ENV_OOTP_3D = "OOTP_FACEFORGE_OOTP_3D"
+ENV_MODELS = "OOTP_FACEFORGE_MODELS"
 CONFIG_NAME = "config.json"
 CONFIG_OOTP_3D = "ootp_3d"
 
@@ -56,6 +58,56 @@ def workspace_root() -> Path:
     if raw:
         return Path(raw).expanduser()
     return Path.home() / "FaceForgeWorkspace"
+
+
+def model_search_dirs() -> list[Path]:
+    """Directories searched for optional ONNX models / index files.
+
+    Ordered by priority. Works both from source (repo ``models/``) and from a
+    frozen PyInstaller build, where ``__file__`` lives inside the bundle and the
+    repo path is meaningless. Users of the built app can drop models into
+    ``<workspace>/models`` (or set ``OOTP_FACEFORGE_MODELS``) without rebuilding.
+    """
+    dirs: list[Path] = []
+
+    def _add(path: Path | None) -> None:
+        if path is not None and path not in dirs:
+            dirs.append(path)
+
+    env = os.environ.get(ENV_MODELS)
+    if env and env.strip():
+        _add(Path(env).expanduser())
+    _add(workspace_root() / "models")
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            _add(Path(meipass) / "models")
+        with_exe = Path(sys.executable).resolve().parent
+        _add(with_exe / "models")
+        _add(with_exe / "_internal" / "models")
+    _add(Path(__file__).resolve().parents[2] / "models")
+    return dirs
+
+
+def find_model(filename: str) -> Path | None:
+    """First existing model file named ``filename`` across the search dirs."""
+    for directory in model_search_dirs():
+        candidate = directory / filename
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def default_model_path(filename: str) -> Path:
+    """Resolved path for a model file, or a stable fallback if not present.
+
+    Returns the first existing match; when nothing is found it returns the
+    repo/workspace path so callers still get a real Path to probe with
+    ``is_file()`` (the feature then degrades to a no-op)."""
+    found = find_model(filename)
+    if found is not None:
+        return found
+    return workspace_root() / "models" / filename
 
 
 def config_path() -> Path:

@@ -21,6 +21,7 @@ from PIL import Image, ImageTk
 
 from .cli import (
     BatchCancelled,
+    DEFAULT_FG_DIR,
     DEFAULT_OUT,
     WORKSPACE_PHOTOS,
     default_jobs,
@@ -31,9 +32,21 @@ from .paths import (
     MissingOOTPAssets,
     default_ootp_dialog_dir,
     detect_ootp_3d_path,
+    find_model,
     normalize_ootp_3d_path,
     save_ootp_3d_path,
+    workspace_root,
 )
+
+
+GLASSES_MODEL_FILE = "bisenet_resnet_34.onnx"
+# Label shown in the dropdown -> --glasses detection mode passed to the pipeline.
+GLASSES_MODES = {
+    "Auto (add glasses when detected)": "auto",
+    "Always detect glasses": "on",
+    "Off": "off",
+}
+DEFAULT_GLASSES_LABEL = "Auto (add glasses when detected)"
 
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
@@ -56,13 +69,14 @@ def _running_as_frozen() -> bool:
 
 
 def _result_folder(manifest: dict) -> Path:
-    return Path(manifest["outputs"]["fg"]).parents[1]
+    outputs = manifest["outputs"]
+    return Path(outputs.get("fg_export") or outputs["fg"]).parent
 
 
 def _batch_output_folder(manifests: list[dict]) -> Path:
     if not manifests:
-        return DEFAULT_OUT
-    return Path(manifests[-1]["outputs"]["fg"]).parents[2]
+        return DEFAULT_FG_DIR
+    return _result_folder(manifests[-1])
 
 
 class _GUID(ctypes.Structure):
@@ -301,10 +315,13 @@ class FaceForgeApp(tk.Tk):
         self.status_var = tk.StringVar(value="Ready")
         self.photo_count_var = tk.StringVar(value="")
         self.ootp_status_var = tk.StringVar(value="Checking OOTP assets...")
+        self.glasses_var = tk.StringVar(value=DEFAULT_GLASSES_LABEL)
+        self.glasses_status_var = tk.StringVar(value="")
+        self._active_glasses = "auto"
         self.progress_detail_var = tk.StringVar(value="")
         self.preview_status_var = tk.StringVar(value="No completed preview yet")
         self.output_location_var = tk.StringVar(
-            value=f"Results save to: {DEFAULT_OUT}"
+            value=f"FG files save to: {DEFAULT_FG_DIR}"
         )
         self.selected_paths: list[Path] = [default_photos]
         self._busy_started_at: float | None = None
@@ -322,6 +339,7 @@ class FaceForgeApp(tk.Tk):
         self._build_ui()
         self.bind("<Escape>", self._cancel_build)
         self._refresh_ootp_status()
+        self._refresh_glasses_status()
         self._refresh_photo_count()
         self.after(100, self._poll_events)
 
@@ -440,6 +458,30 @@ class FaceForgeApp(tk.Tk):
             wraplength=300,
         ).grid(row=7, column=0, sticky="w", pady=(0, 18))
 
+        ttk.Label(controls, text="Glasses", style="H2.TLabel").grid(
+            row=8, column=0, sticky="w"
+        )
+        self.glasses_combo = ttk.Combobox(
+            controls,
+            textvariable=self.glasses_var,
+            values=list(GLASSES_MODES),
+            state="readonly",
+        )
+        self.glasses_combo.grid(row=9, column=0, sticky="ew", pady=(10, 6))
+        ttk.Label(
+            controls,
+            textvariable=self.glasses_status_var,
+            style="Hint.TLabel",
+            wraplength=300,
+        ).grid(row=10, column=0, sticky="w", pady=(0, 18))
+
+        self.lab_var = tk.BooleanVar(master=self, value=False)
+        ttk.Checkbutton(
+            controls,
+            text="Likeness Lab (best of 4, slower)",
+            variable=self.lab_var,
+        ).grid(row=11, column=0, sticky="w", pady=(0, 10))
+
         self.build_button = tk.Button(
             controls,
             text="Build",
@@ -454,33 +496,33 @@ class FaceForgeApp(tk.Tk):
             padx=18,
             pady=13,
         )
-        self.build_button.grid(row=8, column=0, sticky="ew")
+        self.build_button.grid(row=12, column=0, sticky="ew")
 
         self.progress = ttk.Progressbar(controls, mode="indeterminate")
-        self.progress.grid(row=9, column=0, sticky="ew", pady=(18, 10))
+        self.progress.grid(row=13, column=0, sticky="ew", pady=(18, 10))
         ttk.Label(controls, textvariable=self.status_var, style="Status.TLabel").grid(
-            row=10, column=0, sticky="w"
+            row=14, column=0, sticky="w"
         )
         ttk.Label(
             controls,
             textvariable=self.progress_detail_var,
             style="Hint.TLabel",
             wraplength=300,
-        ).grid(row=11, column=0, sticky="w", pady=(4, 0))
+        ).grid(row=15, column=0, sticky="w", pady=(4, 0))
 
         self.output_button = ttk.Button(
             controls,
-            text="Open Saved Folder",
+            text="Open FG Folder",
             command=self._open_output,
             state="disabled",
         )
-        self.output_button.grid(row=12, column=0, sticky="ew", pady=(18, 0))
+        self.output_button.grid(row=16, column=0, sticky="ew", pady=(18, 0))
         ttk.Label(
             controls,
             textvariable=self.output_location_var,
             style="Hint.TLabel",
             wraplength=300,
-        ).grid(row=13, column=0, sticky="w", pady=(8, 0))
+        ).grid(row=17, column=0, sticky="w", pady=(8, 0))
 
         preview_panel = ttk.Frame(body, style="Panel.TFrame", padding=24)
         preview_panel.grid(row=0, column=1, sticky="nsew")
@@ -547,6 +589,20 @@ class FaceForgeApp(tk.Tk):
             return False
         self.ootp_status_var.set(f"Found via {result.source}: {result.path}")
         return True
+
+    def _selected_glasses_mode(self) -> str:
+        return GLASSES_MODES.get(self.glasses_var.get(), "auto")
+
+    def _refresh_glasses_status(self) -> None:
+        if find_model(GLASSES_MODEL_FILE) is not None:
+            self.glasses_status_var.set(
+                "Glasses model ready. Detected eyeglasses become a clean frame."
+            )
+            return
+        drop = workspace_root() / "models"
+        self.glasses_status_var.set(
+            f"Glasses model not found. Put {GLASSES_MODEL_FILE} in {drop} to enable."
+        )
 
     def _choose_ootp_folder(self) -> bool:
         path = filedialog.askdirectory(
@@ -664,7 +720,7 @@ class FaceForgeApp(tk.Tk):
             self._last_progress_second = -1
             self.status_var.set(label)
             self.progress_detail_var.set("")
-            self.output_location_var.set(f"Results save to: {DEFAULT_OUT}")
+            self.output_location_var.set(f"FG files save to: {DEFAULT_FG_DIR}")
             self.output_button.configure(state="disabled")
             self.build_button.configure(
                 state="normal",
@@ -674,6 +730,7 @@ class FaceForgeApp(tk.Tk):
             self.photo_button.configure(state="disabled")
             self.folder_button.configure(state="disabled")
             self.ootp_button.configure(state="disabled")
+            self.glasses_combo.configure(state="disabled")
             self.progress.stop()
             if total:
                 self.progress.configure(mode="determinate", maximum=total, value=0)
@@ -700,6 +757,7 @@ class FaceForgeApp(tk.Tk):
         self.photo_button.configure(state="normal")
         self.folder_button.configure(state="normal")
         self.ootp_button.configure(state="normal")
+        self.glasses_combo.configure(state="readonly")
 
     def _cancel_build(self, event: object | None = None) -> str:
         if self._busy_started_at is None:
@@ -724,6 +782,7 @@ class FaceForgeApp(tk.Tk):
             messagebox.showerror("No photos", str(exc))
             return
         self.logs.clear()
+        self._active_glasses = self._selected_glasses_mode()
         self.build_button.configure(text="Building...")
         self.preview_status_var.set("Preview updates after each completed build")
         if len(items) == 1:
@@ -790,7 +849,9 @@ class FaceForgeApp(tk.Tk):
             name=item.get("name"),
             slug=item.get("slug"),
             out_dir=item.get("out_dir", str(DEFAULT_OUT)),
+            fg_dir=item.get("fg_dir", str(DEFAULT_FG_DIR)),
             profile=item.get("profile", DEFAULT_PROFILE),
+            lab=item.get("lab", bool(self.lab_var.get())),
             texture_photo=item.get("texture_photo"),
             texture_mode=item.get("texture_mode", "fuse"),
             max_yaw=item.get("max_yaw"),
@@ -810,6 +871,11 @@ class FaceForgeApp(tk.Tk):
             detail_jpeg_quality=item.get("detail_jpeg_quality"),
             eye_detail_strength=item.get("eye_detail_strength"),
             detail_min_cos=item.get("detail_min_cos"),
+            glasses=item.get("glasses", self._active_glasses),
+            glasses_model=item.get("glasses_model"),
+            glasses_method=item.get("glasses_method"),
+            glasses_strength=item.get("glasses_strength"),
+            glasses_frame_strength=item.get("glasses_frame_strength"),
             restore=item.get("restore"),
             restore_model=item.get("restore_model"),
             id_refine=item.get("id_refine"),
@@ -982,9 +1048,10 @@ class FaceForgeApp(tk.Tk):
                         f"Built: {manifest['player']['name']}",
                     )
                     self.last_output = _result_folder(manifest)
-                    fg_path = Path(manifest["outputs"]["fg"])
-                    self.status_var.set(f"Saved: {fg_path.name}")
-                    self.output_location_var.set(f"Saved to: {self.last_output}")
+                    outputs = manifest["outputs"]
+                    fg_path = Path(outputs.get("fg_export") or outputs["fg"])
+                    self.status_var.set(f"Ready: {fg_path.name}")
+                    self.output_location_var.set(f"FG saved to: {self.last_output}")
                     self._set_busy(False)
                     self.output_button.configure(state="normal")
                 elif kind == "preview":
@@ -992,7 +1059,7 @@ class FaceForgeApp(tk.Tk):
                     preview_path = Path(manifest["outputs"]["preview"])
                     self._show_preview(preview_path, f"Built: {manifest['player']['name']}")
                     self.last_output = _batch_output_folder([manifest])
-                    self.output_location_var.set(f"Saved to: {_result_folder(manifest)}")
+                    self.output_location_var.set(f"FG saved to: {self.last_output}")
                     self.output_button.configure(state="normal")
                 elif kind == "batch_done":
                     manifests, failures, stdout, stderr = payload  # type: ignore[misc]
@@ -1005,7 +1072,7 @@ class FaceForgeApp(tk.Tk):
                             f"Last built: {manifests[-1]['player']['name']}",
                         )
                         self.last_output = _batch_output_folder(manifests)
-                        self.output_location_var.set(f"Saved to: {self.last_output}")
+                        self.output_location_var.set(f"FG files saved to: {self.last_output}")
                         self.output_button.configure(state="normal")
                     skipped = len(failures)
                     self.status_var.set(

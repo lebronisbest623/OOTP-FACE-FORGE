@@ -4,8 +4,10 @@
   hosted by the facefusion project).
 - ArcFace w600k_r50 (--id-refine stage; InsightFace model-zoo weights,
   distributed for non-commercial research use).
+- BiSeNet ResNet-34 face parser (--glasses stage; CelebAMask-HQ 19-class
+  segmentation, class 6 = eyeglasses; ONNX hosted by the facefusion project).
 
-Neither model is bundled with this repository.
+None of these models are bundled with this repository.
 
 Usage:
   python scripts/download_restore_model.py [--models-dir models]
@@ -20,6 +22,7 @@ BASE = "https://huggingface.co/facefusion/models-3.0.0/resolve/main/"
 MODELS = {
     "GFPGANv1.4.onnx": BASE + "gfpgan_1.4.onnx",
     "arcface_w600k_r50.onnx": BASE + "arcface_w600k_r50.onnx",
+    "bisenet_resnet_34.onnx": BASE + "bisenet_resnet_34.onnx",
 }
 DEFAULT_DIR = Path(__file__).resolve().parents[1] / "models"
 

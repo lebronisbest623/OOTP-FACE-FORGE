@@ -100,10 +100,8 @@ def face_mask(img_rgb, lms) -> "np.ndarray":
     return mask
 
 
-def exposure_gain(img_rgb: np.ndarray, lms: np.ndarray,
-                  ref_lum: float, lo: float = 0.9, hi: float = 1.45) -> float:
-    """Scalar exposure gain so cheek-skin luminance approaches the basis mean.
-    Clipped so genuinely dark skin keeps most of its tone in the coefficients."""
+def skin_luminance(img_rgb: np.ndarray, lms: np.ndarray) -> float:
+    """Median cheek/nose-bridge skin luminance."""
     h, w = img_rgb.shape[:2]
     eye_d = float(np.linalg.norm(lms[468] - lms[473]))
     r = max(int(eye_d * 0.18), 4)
@@ -115,7 +113,14 @@ def exposure_gain(img_rgb: np.ndarray, lms: np.ndarray,
         if x1 > x0 and y1 > y0:
             samples.append(img_rgb[y0:y1, x0:x1].reshape(-1, 3))
     skin = np.concatenate(samples).astype(np.float32)
-    lum = float(np.median(skin @ np.array([0.299, 0.587, 0.114])))
+    return float(np.median(skin @ np.array([0.299, 0.587, 0.114])))
+
+
+def exposure_gain(img_rgb: np.ndarray, lms: np.ndarray,
+                  ref_lum: float, lo: float = 0.9, hi: float = 1.45) -> float:
+    """Scalar exposure gain so cheek-skin luminance approaches the basis mean.
+    Clipped so genuinely dark skin keeps most of its tone in the coefficients."""
+    lum = skin_luminance(img_rgb, lms)
     return float(np.clip(1.12 * ref_lum / max(lum, 1.0), lo, hi))
 
 
@@ -161,7 +166,15 @@ def illum_correct(img_rgb: np.ndarray, mask: np.ndarray,
     dodge = 1.0 + 0.65 * (dodge - 1.0)
     out[mask] = np.clip(out[mask] * dodge[mask, None], 0, 255)
 
-    # soft-compress specular highlights inside the mask
+    return compress_speculars(out, mask)
+
+
+def compress_speculars(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Soft-compress specular highlights inside the mask. Returns float32 RGB.
+
+    Speculars are view-dependent, so neither SH delighting nor mirror
+    correction models them; this knee keeps them out of the baked texture."""
+    out = np.asarray(img, np.float32).copy()
     Y = out @ np.array([0.299, 0.587, 0.114], np.float32)
     knee = float(np.percentile(Y[mask], 90))
     hi = mask & (Y > knee)
@@ -169,6 +182,41 @@ def illum_correct(img_rgb: np.ndarray, mask: np.ndarray,
         scale = (knee + (Y[hi] - knee) * 0.35) / np.maximum(Y[hi], 1.0)
         out[hi] *= scale[:, None]
     return np.clip(out, 0, 255)
+
+
+def feature_exclude_mask(shape: tuple[int, int], lms: np.ndarray) -> np.ndarray:
+    """(H,W) bool mask over brows, eyes, lips, and nostrils.
+
+    Shading estimation must sample skin only: these regions are dark albedo
+    that a lighting fit would otherwise read as shadow."""
+    import cv2
+
+    h, w = int(shape[0]), int(shape[1])
+    mask = np.zeros((h, w), np.uint8)
+    eye_d = float(np.linalg.norm(lms[468] - lms[473]))
+    if eye_d <= 1e-6:
+        eye_d = max(float(np.ptp(lms[:, 0])), 1.0) * 0.25
+
+    def fill(indices: list[int]) -> None:
+        cv2.fillPoly(mask, [lms[indices].astype(np.int32)], 1)
+
+    # eye openings (lower lid forward, upper lid back = closed contour)
+    fill([33, 7, 163, 144, 145, 153, 154, 155, 133,
+          173, 157, 158, 159, 160, 161, 246])
+    fill([263, 249, 390, 373, 374, 380, 381, 382, 362,
+          398, 384, 385, 386, 387, 388, 466])
+    # brows (upper + lower ridge outline)
+    fill([70, 63, 105, 66, 107, 55, 65, 52, 53, 46])
+    fill([336, 296, 334, 293, 300, 276, 283, 282, 295, 285])
+    # outer lips
+    fill([61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291,
+          375, 321, 405, 314, 17, 84, 181, 91, 146])
+    for li in (98, 327):                                   # nostril flares
+        cv2.circle(mask, tuple(lms[li].astype(int)),
+                   max(2, int(round(0.14 * eye_d))), 1, -1)
+    pad = max(2, int(round(0.10 * eye_d)))
+    mask = cv2.dilate(mask, np.ones((pad, pad), np.uint8))
+    return mask.astype(bool)
 
 
 def close_landmarker() -> None:

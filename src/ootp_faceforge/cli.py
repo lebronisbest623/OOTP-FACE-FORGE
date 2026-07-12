@@ -27,6 +27,7 @@ WORKSPACE_EXPORTS = WORKSPACE_ROOT / "exports"
 WORKSPACE_DEBUG = WORKSPACE_ROOT / "debug"
 WORKSPACE_MODELS = WORKSPACE_ROOT / "models"
 DEFAULT_OUT = WORKSPACE_ROOT / "runs"
+DEFAULT_FG_DIR = WORKSPACE_ROOT / "fg_files"
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 
 
@@ -35,6 +36,95 @@ class BatchCancelled(RuntimeError):
 
 PROFILES: dict[str, list[str]] = {
     "identity": [],
+    "likeness": [
+        "--render-retrieval", "auto",
+        "--retrieval", "auto",
+        "--photofit", "auto",
+        "--emb2shape", "auto",
+        "--modeller-fit", "auto",
+        "--id-refine", "8",
+        "--refine-size", "160",
+        "--refine-r-max", "1.2",
+        "--shape-gain", "1.0",
+        "--shape-cap", "3.5",
+        "--shape-norm-cap", "9.5",
+        "--detail-strength", "0.85",
+        "--detail-edge-strength", "1.0",
+        "--detail-flat-neutralize", "0.25",
+        "--detail-shadow-neutralize", "0.55",
+        "--detail-highlight-neutralize", "0.28",
+        "--eye-detail-strength", "0.5",
+        "--likeness-detail", "0.45",
+        "--likeness-detail-gain", "1.2",
+        "--detail-jpeg-quality", "90",
+    ],
+    "likeness-fast": [
+        "--render-retrieval", "auto",
+        "--retrieval", "auto",
+        "--photofit", "auto",
+        "--emb2shape", "auto",
+        "--modeller-fit", "auto",
+        "--id-refine", "0",
+        "--shape-gain", "1.0",
+        "--shape-cap", "3.5",
+        "--shape-norm-cap", "9.5",
+        "--detail-strength", "0.85",
+        "--detail-edge-strength", "1.0",
+        "--detail-flat-neutralize", "0.25",
+        "--detail-shadow-neutralize", "0.55",
+        "--detail-highlight-neutralize", "0.28",
+        "--eye-detail-strength", "0.5",
+        "--likeness-detail", "0.45",
+        "--likeness-detail-gain", "1.2",
+        "--detail-jpeg-quality", "90",
+    ],
+    "likeness-texture": [
+        "--render-retrieval", "auto",
+        "--retrieval", "auto",
+        "--photofit", "auto",
+        "--emb2shape", "auto",
+        "--modeller-fit", "auto",
+        "--id-refine", "0",
+        "--shape-gain", "1.0",
+        "--shape-cap", "3.5",
+        "--shape-norm-cap", "9.5",
+        "--detail-size", "512",
+        "--detail-strength", "1.05",
+        "--detail-chroma-strength", "0.06",
+        "--detail-edge-strength", "1.18",
+        "--detail-flat-neutralize", "0.12",
+        "--detail-shadow-neutralize", "0.36",
+        "--detail-highlight-neutralize", "0.48",
+        "--eye-detail-strength", "0.58",
+        "--likeness-detail", "0.65",
+        "--likeness-detail-gain", "1.28",
+        "--detail-jpeg-quality", "92",
+        "--skin-tone-match", "off",
+    ],
+    "likeness-max": [
+        "--restore", "auto",
+        "--render-retrieval", "auto",
+        "--retrieval", "auto",
+        "--photofit", "auto",
+        "--emb2shape", "auto",
+        "--modeller-fit", "auto",
+        "--id-refine", "48",
+        "--refine-size", "192",
+        "--refine-r-max", "1.8",
+        "--shape-gain", "1.0",
+        "--shape-cap", "3.5",
+        "--shape-norm-cap", "9.5",
+        "--detail-size", "512",
+        "--detail-strength", "0.9",
+        "--detail-edge-strength", "1.05",
+        "--detail-flat-neutralize", "0.25",
+        "--detail-shadow-neutralize", "0.55",
+        "--detail-highlight-neutralize", "0.32",
+        "--eye-detail-strength", "0.35",
+        "--likeness-detail", "0.45",
+        "--likeness-detail-gain", "1.2",
+        "--detail-jpeg-quality", "92",
+    ],
     "clean": [
         "--tex-lam", "7",
         "--detail-strength", "0.55",
@@ -156,14 +246,30 @@ def parse_pipeline_summary(stdout: str) -> dict[str, Any]:
             summary["texture_fusion"] = line
         elif line.startswith("identity:"):
             summary["identity"] = line
+        elif line.startswith("render-retrieval:"):
+            summary["render_retrieval"] = line
+        elif line.startswith("retrieval:"):
+            summary["retrieval"] = line
         elif line.startswith("multi shape:"):
             summary["shape"] = line
+        elif line.startswith("shape norm:"):
+            summary["shape_norm"] = line
+        elif line.startswith("id refine:"):
+            summary["id_refine"] = line
+        elif line.startswith("modeller fit:"):
+            summary["modeller_fit"] = line
         elif line.startswith("exposure gain:"):
             summary["exposure_gain"] = line.partition(":")[2].strip()
+        elif line.startswith("delight:"):
+            summary["delight"] = line
         elif line.startswith("tex fit:"):
             summary["texture_fit"] = line
         elif line.startswith("detail fusion:"):
             summary["detail_fusion"] = line
+        elif line.startswith("likeness detail:"):
+            summary["likeness_detail"] = line
+        elif line.startswith("glasses suppress:"):
+            summary["glasses_suppress"] = line
         elif line.startswith("detail coverage:"):
             summary["detail_coverage"] = line.partition(":")[2].strip()
     return summary
@@ -237,21 +343,67 @@ def build_pipeline_args(args: argparse.Namespace, fg_path: Path) -> list[str]:
         "tex_erode",
         "exposure_lo",
         "exposure_hi",
+        "delight",
         "detail_size",
         "detail_strength",
         "detail_chroma_strength",
         "detail_edge_strength",
         "detail_flat_neutralize",
         "detail_shadow_neutralize",
+        "detail_highlight_neutralize",
+        "detail_dark_keep",
         "detail_jpeg_quality",
         "eye_detail_strength",
+        "likeness_detail",
+        "likeness_detail_gain",
         "detail_min_cos",
+        "shape_gain",
+        "shape_cap",
+        "shape_norm_cap",
+        "glasses",
+        "glasses_model",
+        "glasses_method",
+        "glasses_strength",
+        "glasses_suppress_strength",
+        "glasses_frame_strength",
+        "glasses_mesh_assets",
+        "glasses_mesh_opacity",
+        "glasses_mesh_scale_x",
+        "glasses_mesh_scale_y",
+        "glasses_mesh_offset_y",
+        "glasses_style",
+        "glasses_color",
+        "glasses_rim_width",
+        "glasses_lens_width",
+        "glasses_lens_height",
+        "glasses_bridge",
         "restore",
         "restore_model",
         "id_refine",
         "id_model",
+        "render_retrieval",
+        "render_index",
+        "render_top_k",
+        "render_geom_weight",
+        "render_temperature",
+        "render_rerank_weight",
+        "render_min_matches",
+        "retrieval",
+        "retrieval_index",
+        "retrieval_top_k",
+        "retrieval_geom_weight",
+        "retrieval_temperature",
+        "photofit",
+        "photofit_model",
+        "emb2shape",
+        "emb2shape_model",
+        "modeller_fit",
+        "modeller_iters",
+        "modeller_prior_lam",
+        "modeller_r_max",
         "refine_size",
         "refine_r_max",
+        "skin_tone_match",
         "debug_dir",
     ):
         add_optional_arg(cmd, option, getattr(args, option, None))
@@ -259,6 +411,8 @@ def build_pipeline_args(args: argparse.Namespace, fg_path: Path) -> list[str]:
 
 
 def build_player(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "lab", False):
+        return lab_player(args)
     photos = Path(args.photos)
     name = getattr(args, "name", None) or photos.name
     slug = slugify(getattr(args, "slug", None) or name)
@@ -267,7 +421,11 @@ def build_player(args: argparse.Namespace) -> dict[str, Any]:
     preview_dir = player_dir / "preview"
     meta_dir = player_dir / "meta"
     log_dir = player_dir / "logs"
-    for directory in (fg_dir, preview_dir, meta_dir, log_dir):
+    make_preview = not bool(getattr(args, "no_preview", False))
+    directories = [fg_dir, meta_dir, log_dir]
+    if make_preview:
+        directories.append(preview_dir)
+    for directory in directories:
         directory.mkdir(parents=True, exist_ok=True)
 
     fg_path = fg_dir / f"{slug}.fg"
@@ -275,31 +433,39 @@ def build_player(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = meta_dir / f"{slug}.manifest.json"
     appearance_path = meta_dir / f"{slug}.appearance.json"
     log_path = log_dir / "build.log"
+    fg_export_dir = Path(getattr(args, "fg_dir", None) or DEFAULT_FG_DIR)
+    fg_export_dir.mkdir(parents=True, exist_ok=True)
+    fg_export_path = fg_export_dir / f"{slug}.fg"
 
     pipeline_cmd = build_pipeline_args(args, fg_path)
     pipeline = run_command(pipeline_cmd, PROJECT_ROOT)
     require_ok(pipeline, "pipeline")
 
-    render_cmd = [
-        sys.executable,
-        "-m",
-        "ootp_faceforge.render",
-        str(fg_path),
-        str(preview_path),
-        "--size",
-        str(args.size),
-        "--aa",
-        str(args.aa),
-    ]
-    render = run_command(render_cmd, PROJECT_ROOT)
-    require_ok(render, "render")
+    render_cmd: list[str] | None = None
+    render = {"stdout": "", "stderr": ""}
+    if make_preview:
+        render_cmd = [
+            sys.executable,
+            "-m",
+            "ootp_faceforge.render",
+            str(fg_path),
+            str(preview_path),
+            "--size",
+            str(args.size),
+            "--aa",
+            str(args.aa),
+        ]
+        render = run_command(render_cmd, PROJECT_ROOT)
+        require_ok(render, "render")
+    if fg_export_path != fg_path:
+        shutil.copy2(fg_path, fg_export_path)
 
     log_path.write_text(
         "\n".join([
             "$ " + " ".join(pipeline_cmd),
             pipeline["stdout"],
             pipeline["stderr"],
-            "$ " + " ".join(render_cmd),
+            "$ " + " ".join(render_cmd) if render_cmd else "# preview skipped",
             render["stdout"],
             render["stderr"],
         ]),
@@ -338,7 +504,8 @@ def build_player(args: argparse.Namespace) -> dict[str, Any]:
         },
         "outputs": {
             "fg": str(fg_path),
-            "preview": str(preview_path),
+            "fg_export": str(fg_export_path),
+            "preview": str(preview_path) if make_preview else None,
             "appearance": str(appearance_path),
             "log": str(log_path),
         },
@@ -350,11 +517,12 @@ def build_player(args: argparse.Namespace) -> dict[str, Any]:
     }
     if getattr(args, "flat_copy", False):
         flat_fg = Path(args.out_dir) / f"{slug}.fg"
-        flat_preview = Path(args.out_dir) / f"{slug}.png"
         shutil.copy2(fg_path, flat_fg)
-        shutil.copy2(preview_path, flat_preview)
         manifest["outputs"]["flat_fg"] = str(flat_fg)
-        manifest["outputs"]["flat_preview"] = str(flat_preview)
+        if make_preview:
+            flat_preview = Path(args.out_dir) / f"{slug}.png"
+            shutil.copy2(preview_path, flat_preview)
+            manifest["outputs"]["flat_preview"] = str(flat_preview)
 
     manifest_path.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
@@ -362,8 +530,153 @@ def build_player(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     print(f"built {name}")
-    print(f"  fg:       {fg_path}")
+    print(f"  fg file:  {fg_export_path}")
+    print(f"  preview:  {preview_path if make_preview else 'skipped'}")
+    print(f"  details:  {player_dir}")
+    print(f"  manifest: {manifest_path}")
+    return manifest
+
+
+def lab_player(args: argparse.Namespace) -> dict[str, Any]:
+    """Likeness Lab build: several pipeline variants, keep the best-scoring.
+
+    Falls back to a normal single build when the identity model or usable
+    photos are unavailable (scoring would be impossible)."""
+    from . import lab as lab_mod
+
+    photos = Path(args.photos)
+    refs = lab_mod.photo_embeddings(photos, getattr(args, "id_model", None))
+    if not refs:
+        print("lab: identity model or photo embeddings unavailable; "
+              "running a normal build instead")
+        args.lab = False
+        return build_player(args)
+
+    name = getattr(args, "name", None) or photos.name
+    slug = slugify(getattr(args, "slug", None) or name)
+    player_dir = Path(args.out_dir) / slug
+    fg_dir = player_dir / "facegen"
+    lab_dir = player_dir / "lab"
+    preview_dir = player_dir / "preview"
+    meta_dir = player_dir / "meta"
+    log_dir = player_dir / "logs"
+    for directory in (fg_dir, lab_dir, preview_dir, meta_dir, log_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    fg_path = fg_dir / f"{slug}.fg"
+    preview_path = preview_dir / f"{slug}_ootp.png"
+    sheet_path = preview_dir / f"{slug}_lab.png"
+    manifest_path = meta_dir / f"{slug}.manifest.json"
+    appearance_path = meta_dir / f"{slug}.appearance.json"
+    log_path = log_dir / "build.log"
+    fg_export_dir = Path(getattr(args, "fg_dir", None) or DEFAULT_FG_DIR)
+    fg_export_dir.mkdir(parents=True, exist_ok=True)
+    fg_export_path = fg_export_dir / f"{slug}.fg"
+
+    print(f"lab: {len(lab_mod.VARIANTS)} candidates x "
+          f"{len(refs)} reference photos")
+    log_lines: list[str] = []
+    candidates: list[Any] = []
+    winner_stdout = ""
+    for label, extra in lab_mod.VARIANTS:
+        cand_fg = lab_dir / f"{slug}.{label}.fg"
+        cmd = build_pipeline_args(args, cand_fg) + extra
+        result = run_command(cmd, PROJECT_ROOT)
+        log_lines += [f"$ [{label}] " + " ".join(cmd),
+                      result["stdout"], result["stderr"]]
+        cand = lab_mod.Candidate(label, cand_fg)
+        if result["returncode"] != 0:
+            cand.error = f"pipeline exit {result['returncode']}"
+        else:
+            lab_mod.score_candidate(cand, refs, getattr(args, "id_model", None))
+            cand.stdout = result["stdout"]
+        candidates.append(cand)
+        shown = f"{cand.score:.4f}" if cand.score is not None else cand.error
+        print(f"lab candidate: {label} -> {shown}")
+
+    scored = [c for c in candidates if c.score is not None]
+    if not scored:
+        raise SystemExit("lab: every candidate failed")
+    winner = max(scored, key=lambda c: c.score)
+    winner_stdout = getattr(winner, "stdout", "")
+    shutil.copy2(winner.fg_path, fg_path)
+    if fg_export_path != fg_path:
+        shutil.copy2(fg_path, fg_export_path)
+
+    render_cmd = [sys.executable, "-m", "ootp_faceforge.render",
+                  str(fg_path), str(preview_path),
+                  "--size", str(args.size), "--aa", str(args.aa)]
+    render_result = run_command(render_cmd, PROJECT_ROOT)
+    require_ok(render_result, "render")
+    lab_mod.contact_sheet(candidates, sheet_path, winner.label)
+    log_path.write_text("\n".join(log_lines), encoding="utf-8")
+
+    appearance = {
+        "schema_version": 1,
+        "player": name,
+        "slug": slug,
+        "hair": None,
+        "hair_color": None,
+        "facial_hair": None,
+        "cap": None,
+        "notes": "OOTP appearance is separate from the .fg face file.",
+    }
+    if not appearance_path.exists() or getattr(args, "overwrite_meta", False):
+        appearance_path.write_text(
+            json.dumps(appearance, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+
+    manifest = {
+        "schema_version": 1,
+        "product": "OOTP FaceForge",
+        "generated_at": now_iso(),
+        "player": {"name": name, "slug": slug},
+        "inputs": {
+            "photos": str(photos),
+            "profile": args.profile,
+            "texture_mode": getattr(args, "texture_mode", None) or "fuse",
+            "texture_photo": getattr(args, "texture_photo", None),
+            "lab": True,
+        },
+        "outputs": {
+            "fg": str(fg_path),
+            "fg_export": str(fg_export_path),
+            "preview": str(preview_path),
+            "lab_sheet": str(sheet_path),
+            "appearance": str(appearance_path),
+            "log": str(log_path),
+        },
+        "lab": {
+            "winner": winner.label,
+            "reference_photos": len(refs),
+            "candidates": [
+                {
+                    "label": c.label,
+                    "score": c.score,
+                    "per_photo": [round(s, 4) for s in c.per_photo],
+                    "error": c.error,
+                    "fg": str(c.fg_path),
+                }
+                for c in candidates
+            ],
+        },
+        "diagnostics": parse_pipeline_summary(winner_stdout),
+    }
+    if getattr(args, "flat_copy", False):
+        flat_fg = Path(args.out_dir) / f"{slug}.fg"
+        shutil.copy2(fg_path, flat_fg)
+        manifest["outputs"]["flat_fg"] = str(flat_fg)
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"built {name} (lab winner: {winner.label}, "
+          f"score {winner.score:.4f})")
+    print(f"  fg file:  {fg_export_path}")
     print(f"  preview:  {preview_path}")
+    print(f"  lab sheet: {sheet_path}")
     print(f"  manifest: {manifest_path}")
     return manifest
 
@@ -578,7 +891,14 @@ def add_build_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--name", help="Display name for manifests.")
     p.add_argument("--slug", help="Output slug. Defaults to the name/photo folder.")
     p.add_argument("--out-dir", default=str(DEFAULT_OUT))
+    p.add_argument("--fg-dir", default=str(DEFAULT_FG_DIR),
+                   help="Folder where finished .fg files are collected.")
     p.add_argument("--profile", choices=sorted(PROFILES), default="identity")
+    p.add_argument("--lab", action="store_true",
+                   help="Likeness Lab: build several candidates (prior/refine "
+                        "variants), score each OOTP render against all player "
+                        "photos with ArcFace, and keep the best. About 4x "
+                        "slower per player.")
     p.add_argument("--texture-photo",
                    help="Substring/path of the texture/detail photo to force.")
     p.add_argument("--texture-mode", choices=("fuse", "best"), default="fuse",
@@ -591,26 +911,92 @@ def add_build_options(p: argparse.ArgumentParser) -> None:
     p.add_argument("--tex-erode", type=int)
     p.add_argument("--exposure-lo", type=float)
     p.add_argument("--exposure-hi", type=float)
+    p.add_argument("--delight", choices=("sh", "mirror", "off"),
+                   help="Photo lighting removal: geometry-based SH delighting "
+                        "(default), midline mirror correction, or off.")
     p.add_argument("--detail-size", type=int)
     p.add_argument("--detail-strength", type=float)
     p.add_argument("--detail-chroma-strength", type=float)
     p.add_argument("--detail-edge-strength", type=float)
     p.add_argument("--detail-flat-neutralize", type=float)
     p.add_argument("--detail-shadow-neutralize", type=float)
+    p.add_argument("--detail-highlight-neutralize", type=float)
+    p.add_argument("--detail-dark-keep", type=float)
     p.add_argument("--detail-jpeg-quality", type=int)
     p.add_argument("--eye-detail-strength", type=float)
+    p.add_argument("--likeness-detail", type=float,
+                   help="Preserve identity feature detail after texture clean-up.")
+    p.add_argument("--likeness-detail-gain", type=float,
+                   help="Contrast gain for preserved identity feature detail.")
     p.add_argument("--detail-min-cos", type=float)
+    p.add_argument("--shape-gain", type=float)
+    p.add_argument("--shape-cap", type=float)
+    p.add_argument("--shape-norm-cap", type=float)
+    p.add_argument("--glasses", choices=("auto", "off", "on"),
+                   help="Detect eyeglasses with the optional BiSeNet parser.")
+    p.add_argument("--glasses-model")
+    p.add_argument("--glasses-method",
+                   choices=("auto", "mesh", "parametric", "frame", "draw",
+                            "protect", "suppress"))
+    p.add_argument("--glasses-strength", type=float)
+    p.add_argument("--glasses-suppress-strength", type=float)
+    p.add_argument("--glasses-frame-strength", type=float)
+    p.add_argument("--glasses-mesh-assets",
+                   help=("FaceGen Accessories folder, .gltf/.fbx/.obj/.dae "
+                         "file/folder, or .zip containing "
+                         ".gltf/.fbx/.obj/.dae, or a named local template "
+                         "alias."))
+    p.add_argument("--glasses-mesh-opacity", type=float)
+    p.add_argument("--glasses-mesh-scale-x", type=float)
+    p.add_argument("--glasses-mesh-scale-y", type=float)
+    p.add_argument("--glasses-mesh-offset-y", type=float)
+    p.add_argument("--glasses-style",
+                   choices=("auto", "sports_goggle", "rectangular", "round", "oval"))
+    p.add_argument("--glasses-color",
+                   choices=("auto", "red", "black", "brown", "blue", "silver"))
+    p.add_argument("--glasses-rim-width", type=float)
+    p.add_argument("--glasses-lens-width", type=float)
+    p.add_argument("--glasses-lens-height", type=float)
+    p.add_argument("--glasses-bridge", choices=("auto", "thin", "thick"))
     p.add_argument("--restore", choices=("auto", "off", "force"))
     p.add_argument("--restore-model")
     p.add_argument("--id-refine", type=int,
                    help="0 disables; positive values enable slow experimental identity search.")
     p.add_argument("--id-model")
+    p.add_argument("--render-retrieval", choices=("auto", "off"),
+                   help="Use the pre-rendered FaceGen nearest-neighbour prior.")
+    p.add_argument("--render-index")
+    p.add_argument("--render-top-k", type=int)
+    p.add_argument("--render-geom-weight", type=float)
+    p.add_argument("--render-temperature", type=float)
+    p.add_argument("--render-rerank-weight", type=float)
+    p.add_argument("--render-min-matches", type=int)
+    p.add_argument("--retrieval", choices=("auto", "off"),
+                   help="Use the CUFP nearest-neighbour FaceGen prior.")
+    p.add_argument("--retrieval-index")
+    p.add_argument("--retrieval-top-k", type=int)
+    p.add_argument("--retrieval-geom-weight", type=float)
+    p.add_argument("--retrieval-temperature", type=float)
+    p.add_argument("--photofit", choices=("auto", "off"),
+                   help="Use the learned direct photo-feature -> FaceGen prior.")
+    p.add_argument("--photofit-model")
+    p.add_argument("--emb2shape", choices=("auto", "off"),
+                   help="Use the learned ArcFace embedding -> FaceGen shape prior.")
+    p.add_argument("--emb2shape-model")
+    p.add_argument("--modeller-fit", choices=("auto", "off"),
+                   help="Use a Modeller-style direct shape coefficient refit.")
+    p.add_argument("--modeller-iters", type=int)
+    p.add_argument("--modeller-prior-lam", type=float)
+    p.add_argument("--modeller-r-max", type=float)
     p.add_argument("--refine-size", type=int)
     p.add_argument("--refine-r-max", type=float)
+    p.add_argument("--skin-tone-match", choices=("on", "off"))
     p.add_argument("--debug-dir",
                    help="Optional directory for intermediate texture/debug images.")
     p.add_argument("--size", type=int, default=512)
     p.add_argument("--aa", type=int, default=2)
+    p.add_argument("--no-preview", action="store_true",
+                   help="Skip preview rendering for faster .fg-only builds.")
     p.add_argument("--flat-copy", action="store_true",
                    help="Also copy .fg and preview directly under --out-dir.")
     p.add_argument("--overwrite-meta", action="store_true",
@@ -645,6 +1031,12 @@ def parse_args() -> argparse.Namespace:
     batch_cmd.add_argument("-j", "--jobs", type=int, default=None,
                            help="Parallel worker processes (default: most cores).")
     batch_cmd.add_argument("--out-dir", default=str(DEFAULT_OUT))
+    batch_cmd.add_argument("--fg-dir", default=str(DEFAULT_FG_DIR),
+                           help="Folder where finished .fg files are collected.")
+    batch_cmd.add_argument("--profile", choices=sorted(PROFILES), default="identity")
+    batch_cmd.add_argument("--lab", action="store_true",
+                           help="Likeness Lab best-of-N build per player "
+                                "(about 4x slower).")
     batch_cmd.add_argument("--size", type=int, default=512)
     batch_cmd.add_argument("--aa", type=int, default=2)
     batch_cmd.add_argument("--texture-mode", choices=("fuse", "best"), default="fuse")

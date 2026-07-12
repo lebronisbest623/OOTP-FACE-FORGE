@@ -100,11 +100,20 @@ def fit_tex_coeffs(basis: Basis, photo_uv: np.ndarray, cov: np.ndarray,
 
 def fuse_maps(maps: list[np.ndarray], covs: list[np.ndarray],
               weights: list[float], neutral: np.ndarray | float,
-              weight_power: float = 2.0) -> tuple[np.ndarray, np.ndarray]:
+              weight_power: float = 2.0,
+              high_power: float | None = None,
+              split_sigma: float = 3.0) -> tuple[np.ndarray, np.ndarray]:
     """Quality-weighted fusion of same-space photo maps.
 
     Invalid pixels fall back to neutral. The weight power lets the clearest
     photo dominate a region without discarding useful coverage from others.
+
+    high_power: when set, split each map into low/high frequency bands at
+    split_sigma and fuse the high band with this (much larger) power. Photos
+    warped through one shared shape are misaligned by a few pixels, so a plain
+    weighted mean averages stubble, brow edges, and pores into mush; near
+    winner-take-all high-band weights keep the best photo's detail crisp while
+    the low band still blends tone evidence from every photo.
     """
     if not maps:
         raise ValueError("fuse_maps requires at least one map")
@@ -119,24 +128,143 @@ def fuse_maps(maps: list[np.ndarray], covs: list[np.ndarray],
         if out.shape != first.shape:
             out = np.broadcast_to(out, first.shape).astype(np.float32).copy()
 
-    accum = np.zeros_like(first, np.float32)
-    wsum = np.zeros(first.shape[:2], np.float32)
-    power = max(float(weight_power), 0.01)
-    for src, cov, weight in zip(maps, covs, weights):
-        src = np.asarray(src, np.float32)
-        cov = np.asarray(cov, bool)
-        if src.shape != first.shape or cov.shape != first.shape[:2]:
-            raise ValueError("all maps and coverage masks must share shape")
-        w = max(float(weight), 0.0) ** power
-        if w <= 0:
-            continue
-        pix_w = cov.astype(np.float32) * w
-        accum += src * pix_w[..., None]
-        wsum += pix_w
+    def _wfuse(bands: list[np.ndarray], power: float):
+        accum = np.zeros_like(first, np.float32)
+        wsum = np.zeros(first.shape[:2], np.float32)
+        p = max(float(power), 0.01)
+        for src, cov, weight in zip(bands, covs, weights):
+            cov = np.asarray(cov, bool)
+            if src.shape != first.shape or cov.shape != first.shape[:2]:
+                raise ValueError("all maps and coverage masks must share shape")
+            w = max(float(weight), 0.0) ** p
+            if w <= 0:
+                continue
+            pix_w = cov.astype(np.float32) * w
+            accum += src * pix_w[..., None]
+            wsum += pix_w
+        return accum, wsum
 
-    valid = wsum > 1e-6
-    out[valid] = accum[valid] / wsum[valid, None]
+    srcs = [np.asarray(m, np.float32) for m in maps]
+    if high_power is None:
+        accum, wsum = _wfuse(srcs, weight_power)
+        valid = wsum > 1e-6
+        out[valid] = accum[valid] / wsum[valid, None]
+        return out, valid
+
+    lows = [cv2.GaussianBlur(s, (0, 0), max(split_sigma, 0.5)) for s in srcs]
+    lo_acc, lo_w = _wfuse(lows, weight_power)
+    hi_acc, hi_w = _wfuse([s - lo for s, lo in zip(srcs, lows)], high_power)
+    valid = lo_w > 1e-6
+    out[valid] = (lo_acc[valid] / lo_w[valid, None]
+                  + hi_acc[valid] / np.maximum(hi_w[valid, None], 1e-6))
     return out, valid
+
+
+def vertex_normals(basis: Basis, cam: np.ndarray, anchor_tri: int) -> np.ndarray:
+    """Area-weighted per-vertex unit normals in camera space.
+
+    The weak-perspective pose leaves the toward-camera z sign ambiguous, so the
+    sign is fixed the same way front_tris does: the anchor triangle (under the
+    nose tip) must face the camera (+z)."""
+    v = cam[basis.tris]                                    # (T,3,3)
+    fn = np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0])    # (T,3), |fn| ~ area
+    sign = np.sign(fn[anchor_tri, 2]) or 1.0
+    n = np.zeros_like(cam, np.float64)
+    for k in range(3):
+        np.add.at(n, basis.tris[:, k], fn)
+    n *= sign
+    return (n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-9)
+            ).astype(np.float32)
+
+
+def _sh_basis(n: np.ndarray) -> np.ndarray:
+    """Order-2 spherical-harmonic irradiance basis (N,9) from unit normals."""
+    x, y, z = n[:, 0], n[:, 1], n[:, 2]
+    return np.stack([np.ones_like(x), x, y, z, x * y, x * z, y * z,
+                     x * x - y * y, 3.0 * z * z - 1.0], 1).astype(np.float32)
+
+
+def estimate_shading(img: np.ndarray, sample_mask: np.ndarray, basis: Basis,
+                     proj2d: np.ndarray, cam: np.ndarray, anchor_tri: int,
+                     norm_mask: np.ndarray | None = None,
+                     min_samples: int = 400, lam: float = 3e-3,
+                     min_r2: float = 0.12) -> tuple[np.ndarray, float] | None:
+    """Estimate the photo's smooth baked-in lighting from the fitted geometry.
+
+    Lambertian irradiance is an order-2 SH function of the surface normal, so
+    regressing photo intensity (sampled at visible mesh vertices) on the SH
+    basis separates lighting from albedo: the smooth normal-dependent part is
+    light, everything else is skin. Dividing the photo by this field removes
+    attached shading without flattening pores, stubble, or feature lines the
+    way blur-based neutralizers do.
+
+    sample_mask: (H,W) bool of pixels the fit may sample (skin only; exclude
+    brows/eyes/lips, they are dark albedo, not shadow). norm_mask: region whose
+    median shading is normalized to 1 (defaults to sample_mask).
+    Returns ((H,W,3) float multiplicative shading, r2) or None when the fit is
+    unreliable (few samples, flat lighting, bad geometry alignment).
+    """
+    h, w = img.shape[:2]
+    normals = vertex_normals(basis, cam, anchor_tri)
+    px = np.round(proj2d).astype(int)
+    inb = ((px[:, 0] >= 1) & (px[:, 0] < w - 1)
+           & (px[:, 1] >= 1) & (px[:, 1] < h - 1))
+    sel = np.nonzero(inb & (normals[:, 2] > 0.25))[0]
+    sel = sel[sample_mask[px[sel, 1], px[sel, 0]]]
+    if len(sel) < min_samples:
+        return None
+    sm = cv2.blur(img.astype(np.float32), (3, 3))
+    vals = sm[px[sel, 1], px[sel, 0]]                      # (N,3)
+    A = _sh_basis(normals[sel])
+    luma = vals @ np.array([0.299, 0.587, 0.114], np.float32)
+
+    def _solve(Ai: np.ndarray, bi: np.ndarray) -> np.ndarray:
+        AtA = Ai.T @ Ai / len(Ai) + lam * np.eye(Ai.shape[1], dtype=np.float32)
+        return np.linalg.solve(AtA, Ai.T @ bi / len(Ai))
+
+    # Dark-albedo leftovers (stubble, moles) and cast shadows (nose, cap brim)
+    # violate the attached-shading model; MAD-trimmed refits keep them out.
+    keep = np.ones(len(sel), bool)
+    res = np.zeros(len(sel), np.float32)
+    for _ in range(2):
+        l9 = _solve(A[keep], luma[keep])
+        res = luma - A @ l9
+        mad = float(np.median(np.abs(res[keep] - np.median(res[keep]))))
+        keep = np.abs(res) < max(3.5 * 1.4826 * mad, 4.0)
+        if keep.sum() < min_samples:
+            return None
+    r2 = 1.0 - float(res[keep].var() / max(luma[keep].var(), 1e-6))
+    if r2 < min_r2:
+        return None
+
+    # Per-channel light coefficients also capture one-sided color casts.
+    L = np.stack([_solve(A[keep], vals[keep, ch]) for ch in range(3)], 1)
+
+    # Splat per-vertex predicted shading into a coarse photo-space grid and
+    # blur-normalize; SH shading is smooth, so this reconstruction is exact
+    # enough and extrapolates over masked-out regions like capped foreheads.
+    splat = np.nonzero(inb & (normals[:, 2] > 0.05))[0]
+    sv = np.clip(_sh_basis(normals[splat]) @ L, 1.0, None)  # (S,3)
+    ds = 8
+    gh, gw = h // ds + 2, w // ds + 2
+    acc = np.zeros((gh, gw, 3), np.float32)
+    wgt = np.zeros((gh, gw), np.float32)
+    gy, gx = px[splat, 1] // ds, px[splat, 0] // ds
+    np.add.at(acc, (gy, gx), sv)
+    np.add.at(wgt, (gy, gx), 1.0)
+    sigma = max(float(np.ptp(px[splat, 0])) / ds / 10.0, 1.5)
+    acc = cv2.GaussianBlur(acc, (0, 0), sigma)
+    wgt = cv2.GaussianBlur(wgt, (0, 0), sigma)
+    field = np.ones((gh, gw, 3), np.float32)
+    ok = wgt > 1e-4
+    field[ok] = acc[ok] / wgt[ok, None]
+    shading = cv2.resize(field, (gw * ds, gh * ds),
+                         interpolation=cv2.INTER_LINEAR)[:h, :w]
+
+    mask = norm_mask if norm_mask is not None else sample_mask
+    med = np.median(shading[mask].reshape(-1, 3), 0)
+    shading /= np.maximum(med, 1e-3)
+    return np.clip(shading, 0.45, 2.2), r2
 
 
 def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
@@ -149,11 +277,32 @@ def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
                  edge_strength: float = 0.85,
                  flat_neutralize: float = 0.45,
                  shadow_neutralize: float = 0.8,
+                 highlight_neutralize: float = 0.0,
+                 dark_keep: float = 0.0,
                  neutralize_eyes: bool = True,
-                 eye_detail_strength: float = 0.0):
+                 eye_detail_strength: float = 0.0,
+                 source_lms: np.ndarray | None = None,
+                 likeness_detail: float = 0.0,
+                 likeness_detail_gain: float = 1.2,
+                 protect: np.ndarray | None = None,
+                 protect_gain: float = 1.0,
+                 suppress: np.ndarray | None = None,
+                 suppress_strength: float = 0.95,
+                 frame: np.ndarray | None = None,
+                 frame_color: np.ndarray | None = None,
+                 frame_strength: float = 0.55):
     """Returns detail modulation map (size,size,3) uint8 (64 = identity).
     photo_valid: optional (H,W) bool mask of usable photo pixels (e.g. face
-    hull without cap/background)."""
+    hull without cap/background).
+    protect: optional (H,W) bool photo-space mask (e.g. eyeglasses) whose detail
+    is kept out of the neutralize/eye/shadow passes so it survives into OOTP;
+    protect_gain deepens the kept detail's contrast about the 64 midpoint.
+    suppress: optional (H,W) bool photo-space mask whose detail should be
+    removed from the final map (e.g. eyeglasses in source photos when the
+    generated player should not wear glasses).
+    frame: optional (H,W) float 0..1 photo-space eyeglass-frame signal
+    composited onto the fully-cleaned detail (an alternative to `protect` that
+    carries only the frame, no lens glare); frame_strength sets how strong."""
     fronts = front_tris(basis, proj2d, anchor_tri, cam, min_cos)
     dpx, dvalid = detail_px(basis, size)
     tri_ok = fronts & dvalid[basis.tris].all(1)
@@ -186,6 +335,38 @@ def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
         det_vm, _ = warp_tris(vm, src_photo, dst, size, tri_ok, order)
         cov1 &= det_vm[..., 0] > 0.9
 
+    def _to_detail(sig: np.ndarray, blur_sigma: float) -> np.ndarray:
+        rep = np.repeat(sig[..., None].astype(np.float32), 3, 2)
+        det, _ = warp_tris(rep, src_photo, dst, size, tri_ok, order)
+        return cv2.GaussianBlur(np.clip(det[..., 0], 0, 1), (0, 0), blur_sigma)
+
+    protect_det = None
+    if protect is not None and protect.any():
+        protect_det = _to_detail(protect.astype(np.float32), 1.5)
+    suppress_det = None
+    if suppress is not None and suppress.any():
+        suppress_det = _to_detail(suppress.astype(np.float32), 1.0)
+        k = max(3, int(round(size * 0.008)) | 1)
+        suppress_det = cv2.dilate(
+            suppress_det.astype(np.float32),
+            np.ones((k, k), np.uint8),
+        )
+        suppress_det = cv2.GaussianBlur(
+            np.clip(suppress_det, 0, 1),
+            (0, 0),
+            max(1.0, size * 0.003),
+        )
+    likeness_det = None
+    if source_lms is not None and likeness_detail > 0:
+        src_mask = _likeness_source_mask(photo.shape[:2], source_lms)
+        if src_mask.any():
+            likeness_det = _to_detail(src_mask, 1.2)
+    if likeness_det is not None and suppress_det is not None:
+        likeness_det *= 1.0 - np.clip(suppress_det * 1.15, 0.0, 1.0)
+    frame_det = None
+    if frame is not None and frame.any():
+        frame_det = _to_detail(frame, 1.0)
+
     S256 = basis.stat_texture(tex_coeffs)
     src_uv = uv_px(basis, 256)[basis.tris]
     det_S, cov2 = warp_tris(S256, src_uv, dst, size, tri_ok, order)
@@ -213,8 +394,14 @@ def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
     D = np.clip(D + edge_strength * (D - blur), 0, 255)
 
     D = np.clip(64.0 + detail_strength * (D - 64.0), 0, 255)
-    D = _compress_dark_detail(D, valid)
+    # Snapshot before the neutralizers so a protected region (eyeglasses) can
+    # keep its raw frame/lens detail; those passes are what erase frames.
+    D_pre = D.copy()
+    # dark_keep > 0 (delit photos): sub-64 detail is albedo (brows, stubble,
+    # lip lines), not baked shadow, so let more of it survive into OOTP.
+    D = _compress_dark_detail(D, valid, float(np.clip(dark_keep, 0.0, 1.0)))
     D = _lift_detail_shadows(D, valid, shadow_neutralize)
+    D = _lower_detail_highlights(D, valid, highlight_neutralize)
     D = _neutralize_flat_detail(D, valid, flat_neutralize)
 
     if neutralize_eyes:
@@ -222,6 +409,45 @@ def build_detail(basis: Basis, photo: np.ndarray, proj2d: np.ndarray,
         # files often bake the photo eyes into the detail map.
         neutral = _neutralize_eyes(basis, D, size)
         D = neutral + eye_detail_strength * (D - neutral)
+
+    if likeness_det is not None:
+        a = np.clip(
+            likeness_det * float(np.clip(likeness_detail, 0.0, 1.0))
+            * valid.astype(np.float32),
+            0.0,
+            1.0,
+        )[..., None]
+        gain = float(np.clip(likeness_detail_gain, 0.0, 3.0))
+        kept = np.clip(64.0 + gain * (D_pre - 64.0), 0, 255)
+        D = a * kept + (1.0 - a) * D
+
+    if protect_det is not None:
+        a = (protect_det * valid.astype(np.float32))[..., None]
+        kept = np.clip(64.0 + protect_gain * (D_pre - 64.0), 0, 255)
+        D = a * kept + (1.0 - a) * D
+
+    if likeness_det is not None or protect_det is not None:
+        D = _lower_detail_highlights(D, valid, highlight_neutralize)
+
+    if suppress_det is not None:
+        a = np.clip(
+            suppress_det * float(np.clip(suppress_strength, 0.0, 1.0))
+            * valid.astype(np.float32),
+            0.0,
+            1.0,
+        )[..., None]
+        D = a * 64.0 + (1.0 - a) * D
+
+    if frame_det is not None:
+        # Composite the frame onto the cleaned detail. With frame_color present
+        # we preserve colored frames (red/blue sports glasses); otherwise we
+        # multiplicatively darken like the older grayscale path.
+        f = (frame_det * valid.astype(np.float32))[..., None]
+        if frame_color is not None:
+            color = np.asarray(frame_color, np.float32).reshape(1, 1, 3)
+            D = f * color + (1.0 - f) * D
+        else:
+            D = D * (1.0 - frame_strength * f)
 
     # feather toward identity (64) at coverage boundary
     dist = cv2.distanceTransform(valid.astype(np.uint8), cv2.DIST_L2, 3)
@@ -235,6 +461,68 @@ def _limit_chroma(D: np.ndarray, strength: float) -> np.ndarray:
     strength = float(np.clip(strength, 0.0, 1.0))
     luma = D @ np.array([0.299, 0.587, 0.114], np.float32)
     return luma[..., None] + strength * (D - luma[..., None])
+
+
+def _likeness_source_mask(shape: tuple[int, int], lms: np.ndarray) -> np.ndarray:
+    """Photo-space mask for feature lines that carry player likeness.
+
+    The ordinary clean-up passes deliberately suppress baked-in lighting and
+    mottled skin. For likeness builds we keep the photo detail around brows,
+    eyelids, nose, mouth, and chin because those are the cues the limited OOTP
+    shape basis cannot reliably reproduce.
+    """
+    h, w = int(shape[0]), int(shape[1])
+    pts = np.asarray(lms, np.float32)
+    if pts.ndim != 2 or pts.shape[0] < 474:
+        return np.zeros((h, w), np.float32)
+    eye_d = float(np.linalg.norm(pts[473] - pts[468]))
+    if eye_d <= 1e-6:
+        eye_d = max(float(np.ptp(pts[:, 0])), 1.0) * 0.25
+    line = max(2, int(round(0.045 * eye_d)))
+    broad = max(line + 1, int(round(0.075 * eye_d)))
+    mask = np.zeros((h, w), np.float32)
+
+    def poly(indices: list[int], value: float, thickness: int,
+             closed: bool = False) -> None:
+        if max(indices) >= pts.shape[0]:
+            return
+        p = np.round(pts[indices]).astype(np.int32)
+        cv2.polylines(mask, [p], closed, float(value), thickness,
+                      lineType=cv2.LINE_AA)
+
+    def blob(indices: list[int], value: float, radius_scale: float) -> None:
+        if max(indices) >= pts.shape[0]:
+            return
+        c = pts[indices].mean(0)
+        radius = max(2, int(round(radius_scale * eye_d)))
+        cv2.circle(mask, tuple(np.round(c).astype(np.int32)), radius,
+                   float(value), -1, lineType=cv2.LINE_AA)
+
+    # Eyebrows and eyelids do the most identity work in OOTP's bald front view.
+    poly([70, 63, 105, 66, 107], 1.00, broad)
+    poly([336, 296, 334, 293, 300], 1.00, broad)
+    poly([46, 53, 52, 65, 55], 0.75, line)
+    poly([276, 283, 282, 295, 285], 0.75, line)
+    poly([33, 7, 163, 144, 145, 153, 154, 155, 133], 0.85, line, True)
+    poly([263, 249, 390, 373, 374, 380, 381, 382, 362], 0.85, line, True)
+    blob([33, 133], 0.42, 0.16)
+    blob([263, 362], 0.42, 0.16)
+
+    # Nose bridge, tip, and nostrils anchor the center-face impression.
+    poly([168, 6, 197, 195, 5, 4, 1, 2], 0.70, line)
+    poly([98, 97, 2, 326, 327], 0.65, line)
+    blob([1, 2, 4, 5], 0.38, 0.13)
+
+    # Mouth and chin often distinguish otherwise similar FaceGen heads.
+    poly([61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291,
+          375, 321, 405, 314, 17, 84, 181, 91, 146], 0.72, line, True)
+    poly([78, 95, 88, 178, 87, 14, 317, 402, 318, 324, 308,
+          415, 310, 311, 312, 13, 82, 81, 80, 191], 0.55, line, True)
+    poly([172, 136, 150, 149, 176, 148, 152, 377, 400, 378, 379, 365, 397],
+         0.35, line)
+
+    mask = cv2.GaussianBlur(np.clip(mask, 0, 1), (0, 0), max(1.0, 0.018 * eye_d))
+    return np.clip(mask, 0, 1).astype(np.float32)
 
 
 def _neutralize_flat_detail(D: np.ndarray, valid: np.ndarray,
@@ -255,17 +543,23 @@ def _neutralize_flat_detail(D: np.ndarray, valid: np.ndarray,
 
 
 def _compress_dark_detail(D: np.ndarray, valid: np.ndarray,
-                          floor: float = 52.0,
-                          slope: float = 0.18) -> np.ndarray:
-    """Soft-limit extreme dark detail values that usually come from shadows."""
+                          keep: np.ndarray | float = 0.0) -> np.ndarray:
+    """Soft-limit extreme dark detail values that usually come from shadows.
+
+    keep (scalar or (H,W), 0..1) relaxes the compressor: 0 = strict shadow
+    clean-up, 1 = mostly preserve dark albedo (brow/beard zones of delit
+    photos)."""
+    k = np.clip(np.asarray(keep, np.float32), 0.0, 1.0)
+    floor = 52.0 - 20.0 * k
+    slope = 0.18 + 0.5 * k
     luma = D @ np.array([0.299, 0.587, 0.114], np.float32)
     dark = (luma < floor) & valid
     if not dark.any():
         return D
-    target = floor + (luma - floor) * float(np.clip(slope, 0.0, 1.0))
+    target = floor + (luma - floor) * slope
     lift = np.maximum(target - luma, 0.0)
     out = D.copy()
-    out[dark] = np.clip(out[dark] + lift[dark, None], 0, 255)
+    out[dark] = np.clip(out[dark] + lift[dark][:, None], 0, 255)
     return out
 
 
@@ -282,6 +576,21 @@ def _lift_detail_shadows(D: np.ndarray, valid: np.ndarray,
     edge_keep = np.clip((micro - 3.0) / 9.0, 0.0, 1.0)
     lift = amount * (1.0 - edge_keep) * valid.astype(np.float32)
     return np.clip(D - shadow[..., None] * lift[..., None], 0, 255)
+
+
+def _lower_detail_highlights(D: np.ndarray, valid: np.ndarray,
+                             amount: float) -> np.ndarray:
+    """Suppress broad baked-in highlights while preserving feature edges."""
+    amount = float(np.clip(amount, 0.0, 1.0))
+    if amount <= 0 or not valid.any():
+        return D
+    luma = D @ np.array([0.299, 0.587, 0.114], np.float32)
+    high = cv2.GaussianBlur(luma - 64.0, (0, 0), 4.2)
+    highlight = np.maximum(high, 0.0)
+    micro = np.abs(luma - cv2.GaussianBlur(luma, (0, 0), 1.2))
+    edge_keep = np.clip((micro - 3.0) / 9.0, 0.0, 1.0)
+    lower = amount * (1.0 - edge_keep) * valid.astype(np.float32)
+    return np.clip(D - highlight[..., None] * lower[..., None], 0, 255)
 
 
 def _surface_point_detail_px(basis: Basis, name: str, size: int) -> np.ndarray:

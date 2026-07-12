@@ -1,0 +1,67 @@
+{
+  "version": 2,
+  "notes": "Paths point at the user's converted CC-licensed Sketchfab meshes promoted from the conversion cache into the workspace models folder. These files are not redistributed with the repo; when a path is missing the pipeline falls back to the procedural glasses mesh.",
+  "templates": [
+    {
+      "id": "rect_fullrim_v1",
+      "aliases": [
+        "glasses_zip_rect"
+      ],
+      "path": "%USERPROFILE%\\FaceForgeWorkspace\\models\\glasses\\candidate_2",
+      "style": "rectangular",
+      "color": "auto",
+      "bake": "solid",
+      "status": "preferred",
+      "notes": "Heavy rectangular full-rim glTF glasses. Cleanest shape of the converted set."
+    },
+    {
+      "id": "sports_fullrim_v1",
+      "aliases": [
+        "sports_goggle_bold"
+      ],
+      "path": "%USERPROFILE%\\FaceForgeWorkspace\\models\\glasses\\candidate_2",
+      "style": "sports_goggle",
+      "color": "auto",
+      "bake": "outline",
+      "status": "preferred",
+      "notes": "Same bold full-rim mesh; reads sporty via the outline bake and auto color."
+    },
+    {
+      "id": "round_wire_v1",
+      "aliases": [
+        "realistic_simple_round"
+      ],
+      "path": "%USERPROFILE%\\FaceForgeWorkspace\\models\\glasses\\candidate_4",
+      "style": "round",
+      "color": "auto",
+      "bake": "solid",
+      "status": "weak",
+      "notes": "Round wire-frame glasses; its lens surfaces are opaque so the solid bake fills them. Demoted until a lens-free round mesh exists — round faces fall through to the full-rim template."
+    },
+    {
+      "id": "rect_light_v1",
+      "aliases": [
+        "glasses1_rect"
+      ],
+      "path": "%USERPROFILE%\\FaceForgeWorkspace\\models\\glasses\\candidate_5",
+      "style": "rectangular",
+      "color": "auto",
+      "bake": "solid",
+      "status": "usable",
+      "notes": "Lighter rectangular frame."
+    },
+    {
+      "id": "sports_wrap_outline_v1",
+      "aliases": [
+        "sports_goggle_red_outline",
+        "yang_goggle_v1"
+      ],
+      "path": "%USERPROFILE%\\FaceForgeWorkspace\\models\\glasses\\candidate_1",
+      "style": "sports_goggle",
+      "color": "red",
+      "bake": "outline",
+      "status": "weak",
+      "notes": "Thin wrap band; kept for comparison, rims break up at small scales."
+    }
+  ]
+}
